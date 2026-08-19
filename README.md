@@ -36,8 +36,8 @@ agent re-derives, badly, at the start of every session.
 | # | Milestone | State |
 |---|-----------|-------|
 | 1 | Schema + Phase A deterministic indexer | **done** |
-| 2 | MCP server, search/get only | in progress |
-| 3 | Notes + write path, evidence enforced | not started |
+| 2 | MCP server, search/get only | **done** |
+| 3 | Notes + write path, evidence enforced | next |
 | 4 | Phase B git-history mining | not started |
 | 5 | Additional MCP clients | not started |
 | 6 | Phase C LLM extraction | not started |
@@ -49,8 +49,10 @@ automated ones will not either.
 
 - .NET SDK 10 (developed against 10.0.302)
 - git on the PATH
-- One NuGet dependency, `Microsoft.Data.Sqlite`, which bundles a prebuilt
-  SQLite with FTS5 — no compiler, no native build step
+- Three NuGet dependencies, all Microsoft- or Anthropic-published:
+  `Microsoft.Data.Sqlite` (bundles a prebuilt SQLite with FTS5, so there is no
+  compiler and no native build step), `ModelContextProtocol` for the server,
+  and `Microsoft.Extensions.Hosting` to host it
 
 ## Getting started
 
@@ -83,6 +85,50 @@ dotnet run --project src/AgentMemoryBank.McpServer -- stats
 Every setting can also come from the environment, which is handy for one-off
 runs: `MEMORY_BANK_REPO_ROOT`, `MEMORY_BANK_REPOS`, `MEMORY_BANK_DB`,
 `MEMORY_BANK_SETTINGS`.
+
+## Using it as an MCP server
+
+Publish once, then point clients at the produced executable rather than at
+`dotnet run`, which would rebuild on every launch:
+
+```bash
+dotnet publish src/AgentMemoryBank.McpServer -c Release -o publish
+```
+
+Register it with Claude Code:
+
+```bash
+claude mcp add memory-bank --scope user -- /full/path/to/publish/agent-memory-bank.exe serve
+```
+
+Or, for VS Code, a `.vscode/mcp.json` in the workspace:
+
+```json
+{ "servers": { "memory-bank": {
+    "command": "/full/path/to/publish/agent-memory-bank.exe",
+    "args": ["serve"] } } }
+```
+
+Three read-only tools are exposed. Nothing in this milestone can write to the
+store, so a misbehaving client cannot corrupt it.
+
+| tool | purpose |
+|------|---------|
+| `memory_search(query, repo?, kind?, limit?)` | BM25 over notes and chunks, notes first, every hit cited |
+| `memory_get(kind, id)` | One chunk or note in full, with line numbers |
+| `memory_stats()` | What the store holds, and whether it has been indexed at all |
+
+Two details that matter more than they look:
+
+**The trigger lives in the tool description.** Nothing queries a memory bank
+unless something tells it to, and clients differ in whether they load repository
+instruction files — but every MCP client shows the model its tool descriptions.
+So the instruction to search *before* changing a measured constant or trusting a
+default is written there, not only in a project's own instructions.
+
+**An empty result distinguishes "nothing recorded" from "never indexed."** A
+store that has not been indexed answers every question with silence, and silence
+reads like evidence of absence. The tools say which one it is.
 
 ## How Phase A works
 

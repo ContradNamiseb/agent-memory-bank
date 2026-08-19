@@ -14,6 +14,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/AgentMemoryBank.Core/AgentMemoryBank.Core.csproj" />
+    <ProjectReference Include="../../src/AgentMemoryBank.McpServer/AgentMemoryBank.McpServer.csproj" />
   </ItemGroup>
 
 </Project>

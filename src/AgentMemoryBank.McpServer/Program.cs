@@ -6,8 +6,9 @@ using AgentMemoryBank.Models;
 namespace AgentMemoryBank.McpServer;
 
 /// <summary>
-/// Entry point. The MCP stdio server is Milestone 2; what is wired up here is
-/// Milestone 1 — the Phase A indexer and the search that proves it works.
+/// Entry point. One executable serves both roles: the operational verbs used
+/// from a terminal, and 'serve', which an MCP client launches to speak
+/// JSON-RPC over stdio.
 /// </summary>
 internal static class Program
 {
@@ -20,7 +21,7 @@ internal static class Program
                 "index" => Index(args[1..]),
                 "search" => Search(args[1..]),
                 "stats" => Stats(args[1..]),
-                "serve" => Serve(),
+                "serve" => StdioServer.RunAsync().GetAwaiter().GetResult(),
                 "help" or "--help" or "-h" => Help(0),
                 var unknown => Fail($"unknown command '{unknown}'"),
             };
@@ -60,7 +61,9 @@ internal static class Program
               stats  [--db PATH]
                      Row counts per repository.
 
-              serve  Run as an MCP stdio server (Milestone 2).
+              serve  Run as an MCP stdio server, exposing memory_search, memory_get and
+                     memory_stats. Speaks JSON-RPC on stdin/stdout; logs go to stderr.
+                     Intended to be launched by an MCP client, not by hand.
 
             Resolved configuration (from {Config.SettingsFileName}, or the environment):
               database   {Config.DbPath}
@@ -71,14 +74,6 @@ internal static class Program
                          MEMORY_BANK_SETTINGS
             """);
         return exitCode;
-    }
-
-    private static int Serve()
-    {
-        Console.Error.WriteLine(
-            "The MCP stdio server is Milestone 2. Milestone 1 is the schema and the Phase A " +
-            "indexer: run 'index' to build the store and 'search' to query it.");
-        return 1;
     }
 
     private static int Index(string[] args)
