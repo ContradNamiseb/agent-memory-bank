@@ -1,0 +1,15 @@
+# Normalise line endings in the repository; check out native on Windows.
+* text=auto
+
+*.cs     text diff=csharp
+*.csproj text
+*.slnx   text
+*.sln    text eol=crlf
+*.props  text
+*.sql    text
+*.md     text
+*.mjs    text
+*.json   text
+*.sh     text eol=lf
+
+*.db     binary

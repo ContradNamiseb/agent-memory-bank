@@ -1,0 +1,22 @@
+{
+  // Copy to memory-bank.local.json, which is gitignored and stays on this
+  // machine. Nothing in this file should ever reach a remote.
+
+  // Directory containing the repositories to index.
+  "repoRoot": "C:/path/to/your/repos",
+
+  // Repository directory names, relative to repoRoot.
+  "repos": ["first-repo", "second-repo"],
+
+  // Where the SQLite index lives. Defaults to memory.db beside the solution.
+  // "dbPath": "C:/path/to/memory.db",
+
+  // Directory names skipped wherever they appear as the first path segment.
+  // "vendoredDirs": ["vendor", "third_party", "external", "node_modules"],
+
+  // Formats specific to your codebase that should never be read as text.
+  // "extraBinaryExtensions": ["parquet", "sqlite"],
+
+  // Files larger than this are not read. Default 2 MiB.
+  // "maxFileBytes": 2097152
+}

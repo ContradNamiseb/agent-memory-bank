@@ -1,0 +1,20 @@
+# .NET build output
+[Bb]in/
+[Oo]bj/
+*.user
+
+# The index itself is a build product: rebuild it with `memory-bank index`.
+memory.db
+memory.db-wal
+memory.db-shm
+
+# The JS prototype's bin/ holds source, not build output.
+!reference/prototype-js/bin/
+
+# Project-specific configuration and notes: never tracked, never pushed.
+local/
+memory-bank.local.json
+
+# Planning and agent-instruction documents: local only, they name real projects.
+PLAN.md
+CLAUDE.md

@@ -1,0 +1,17 @@
+{
+  "name": "agent-memory-bank",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local SQLite store of durable project knowledge, exposed to agents over MCP.",
+  "engines": { "node": ">=24" },
+  "bin": {
+    "memory-reindex": "bin/reindex.mjs",
+    "memory-search": "bin/search.mjs"
+  },
+  "scripts": {
+    "reindex": "node bin/reindex.mjs",
+    "search": "node bin/search.mjs",
+    "test": "node --test test/"
+  }
+}
