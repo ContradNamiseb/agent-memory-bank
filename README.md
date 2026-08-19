@@ -69,9 +69,21 @@ dotnet test
 dotnet publish src/AgentMemoryBank.McpServer -c Release -o publish
 ```
 
-That produces `publish/agent-memory-bank.exe` (`publish/agent-memory-bank` on
-Linux and macOS). It is not on your PATH, so every command below is written
-against the full path to it — substitute your own.
+That produces `publish/agent-memory-bank.exe` on Windows and
+`publish/agent-memory-bank` on Linux and macOS. It is not on your PATH, so every
+command below is written against the full path to it — substitute your own.
+
+Publish on the machine you will run it from. The launcher is native to whatever
+platform built it, so a `publish/` folder copied from Windows to a Mac will not
+start. Everything beside it is portable — `agent-memory-bank.dll` is IL, not a
+Windows library, and the native SQLite for linux-x64, linux-arm64, osx-x64 and
+osx-arm64 all ship in `publish/runtimes/`. If you would rather not publish per
+machine, skip the launcher and run the assembly directly, which works anywhere
+the .NET 10 runtime is installed:
+
+```bash
+dotnet /full/path/to/publish/agent-memory-bank.dll serve
+```
 
 If you only want to try it out, you can skip this and go through the SDK
 instead — same commands, with `--` separating dotnet's arguments from the
@@ -125,6 +137,10 @@ quickest way to confirm the store holds what you think it does:
 The server speaks MCP over stdio, so any client that can launch a command can
 use it. Give each one the **absolute** path to the published executable and the
 single argument `serve`.
+
+The examples below use a Windows path. On Linux and macOS use the extensionless
+`agent-memory-bank` instead, or set `"command": "dotnet"` with
+`"args": ["/path/to/publish/agent-memory-bank.dll", "serve"]`.
 
 #### Claude Code
 
