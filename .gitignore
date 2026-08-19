@@ -1,6 +1,7 @@
 # .NET build output
 [Bb]in/
 [Oo]bj/
+[Pp]ublish/
 *.user
 
 # The index itself is a build product: rebuild it with `memory-bank index`.

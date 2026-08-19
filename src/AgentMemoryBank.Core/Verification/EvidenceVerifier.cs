@@ -97,7 +97,7 @@ public static partial class EvidenceVerifier
             .Query(r => (Id: r.GetInt64("id"), Sha: r.GetString("content_sha")))
             .FirstOrDefault();
 
-        var absolute = Path.Combine(repoRoot, citation.Repo, citation.Path);
+        var absolute = Path.Combine(Config.GetRepoDirectory(citation.Repo, repoRoot), citation.Path);
         if (!File.Exists(absolute))
             return new VerificationResult(noteId, VerificationStatus.Broken,
                 $"The cited file no longer exists: {citation}", citation);

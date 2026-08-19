@@ -61,7 +61,7 @@ public static class Indexer
 
         foreach (var repo in repos)
         {
-            var repoDirectory = Path.Combine(repoRoot, repo);
+            var repoDirectory = Config.GetRepoDirectory(repo, repoRoot);
             if (!GitFileScanner.IsRepository(repoDirectory))
             {
                 results.Add(new RepoIndexResult { Repo = repo, Error = $"not a git repository: {repoDirectory}" });

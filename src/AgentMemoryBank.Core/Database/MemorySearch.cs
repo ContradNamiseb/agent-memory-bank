@@ -142,6 +142,36 @@ public static class MemorySearch
             .FirstOrDefault();
     }
 
+    /// <summary>Full details of one note.</summary>
+    public static Note? GetNote(SqliteConnection db, long id)
+    {
+        using var cmd = db.Prepare("""
+            SELECT id, claim, rationale, evidence, kind, confidence,
+                   anchor_symbol, anchor_text, created_at, verified_at,
+                   superseded_by, run_id
+            FROM note
+            WHERE id = $id
+            """, "$id");
+
+        return cmd.SetAll(id)
+            .Query(r => new Note
+            {
+                Id = r.GetInt64("id"),
+                Claim = r.GetString("claim"),
+                Rationale = r.GetStringOrNull("rationale"),
+                Evidence = r.GetStringOrNull("evidence"),
+                AnchorSymbol = r.GetStringOrNull("anchor_symbol"),
+                AnchorText = r.GetStringOrNull("anchor_text"),
+                Kind = r.IsDBNull(r.GetOrdinal("kind")) ? null : Enum.Parse<NoteKind>(r.GetString("kind"), ignoreCase: true),
+                Confidence = r.IsDBNull(r.GetOrdinal("confidence")) ? null : Enum.Parse<Confidence>(r.GetString("confidence"), ignoreCase: true),
+                CreatedAt = r.GetStringOrNull("created_at"),
+                VerifiedAt = r.GetStringOrNull("verified_at"),
+                SupersededBy = r.IsDBNull(r.GetOrdinal("superseded_by")) ? null : r.GetInt64("superseded_by"),
+                RunId = r.IsDBNull(r.GetOrdinal("run_id")) ? null : r.GetInt64("run_id"),
+            })
+            .FirstOrDefault();
+    }
+
     public static StoreStats Stats(SqliteConnection db)
     {
         using var perRepo = db.Prepare("""

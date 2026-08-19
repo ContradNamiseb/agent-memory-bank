@@ -160,6 +160,20 @@ public static class Config
         ReadCommentHandling = JsonCommentHandling.Skip,
         AllowTrailingCommas = true,
     };
+
+    /// <summary>
+    /// Resolve the on-disk directory for a repository name.
+    /// Uses repoPaths mapping from settings if specified, otherwise combines with repoRoot.
+    /// </summary>
+    public static string GetRepoDirectory(string repoName, string? repoRoot = null)
+    {
+        repoRoot ??= RepoRoot;
+        if (Settings.RepoPaths is not null && Settings.RepoPaths.TryGetValue(repoName, out var customPath))
+        {
+            return Path.IsPathRooted(customPath) ? customPath : Path.Combine(repoRoot, customPath);
+        }
+        return Path.IsPathRooted(repoName) ? repoName : Path.Combine(repoRoot, repoName);
+    }
 }
 
 /// <summary>Shape of <c>memory-bank.local.json</c>. Every field is optional.</summary>
@@ -170,6 +184,9 @@ public sealed record LocalSettings
 
     [JsonPropertyName("repos")]
     public string[]? Repos { get; init; }
+
+    [JsonPropertyName("repoPaths")]
+    public Dictionary<string, string>? RepoPaths { get; init; }
 
     [JsonPropertyName("dbPath")]
     public string? DbPath { get; init; }

@@ -79,3 +79,20 @@ CREATE TRIGGER IF NOT EXISTS note_au AFTER UPDATE ON note BEGIN
   INSERT INTO note_fts(rowid, claim, rationale, evidence)
     VALUES (new.id, new.claim, new.rationale, new.evidence);
 END;
+
+-- Cross-agent session continuity & handoffs.
+-- Allows moving between Antigravity, Claude Code, Copilot, etc. with full context.
+CREATE TABLE IF NOT EXISTS session_handoff (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent TEXT NOT NULL,
+  topic TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  next_steps TEXT NOT NULL,
+  active_files TEXT,
+  open_questions TEXT,
+  context_data TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS handoff_by_created ON session_handoff(created_at DESC);
+

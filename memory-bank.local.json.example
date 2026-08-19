@@ -6,7 +6,12 @@
   "repoRoot": "C:/path/to/your/repos",
 
   // Repository directory names, relative to repoRoot.
-  "repos": ["first-repo", "second-repo"],
+  "repos": ["first-repo", "second-repo", "custom-repo"],
+
+  // Optional: Map repo names to custom relative or absolute paths.
+  // "repoPaths": {
+  //   "custom-repo": "subfolder/custom-repo"
+  // },
 
   // Where the SQLite index lives. Defaults to memory.db beside the solution.
   // "dbPath": "C:/path/to/memory.db",

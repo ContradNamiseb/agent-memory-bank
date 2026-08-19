@@ -226,7 +226,7 @@ public static class NoteStore
         if (chunk.Id == 0) return null;
 
         string? anchor = null;
-        var absolute = Path.Combine(repoRoot, citation.Repo, citation.Path);
+        var absolute = Path.Combine(Config.GetRepoDirectory(citation.Repo, repoRoot), citation.Path);
         if (File.Exists(absolute))
         {
             var lines = Chunker.SplitLines(File.ReadAllText(absolute));
@@ -243,7 +243,7 @@ public static class NoteStore
     /// </summary>
     private static string? AnchorFromDisk(Citation citation, string repoRoot)
     {
-        var absolute = Path.Combine(repoRoot, citation.Repo, citation.Path);
+        var absolute = Path.Combine(Config.GetRepoDirectory(citation.Repo, repoRoot), citation.Path);
         if (!File.Exists(absolute)) return null;
 
         var lines = Chunker.SplitLines(File.ReadAllText(absolute));
