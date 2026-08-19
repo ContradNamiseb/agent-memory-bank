@@ -33,6 +33,9 @@ agent re-derives, badly, at the start of every session.
 
 ## Requirements
 
+- **Windows.** That is the only platform this has been run on, and the only one
+  it is currently supported on. Mac and Linux are intended and will come later;
+  see below for what is already in place for them.
 - .NET SDK 10 (developed against 10.0.302)
 - git on the PATH
 - Three NuGet dependencies, all Microsoft- or Anthropic-published:
@@ -74,16 +77,19 @@ That produces `publish/agent-memory-bank.exe` on Windows and
 command below is written against the full path to it — substitute your own.
 
 Publish on the machine you will run it from. The launcher is native to whatever
-platform built it, so a `publish/` folder copied from Windows to a Mac will not
-start. Everything beside it is portable — `agent-memory-bank.dll` is IL, not a
-Windows library, and the native SQLite for linux-x64, linux-arm64, osx-x64 and
-osx-arm64 all ship in `publish/runtimes/`. If you would rather not publish per
-machine, skip the launcher and run the assembly directly, which works anywhere
-the .NET 10 runtime is installed:
+platform built it, so a `publish/` folder copied from one OS to another will not
+start. To skip the launcher entirely, run the assembly directly:
 
 ```bash
 dotnet /full/path/to/publish/agent-memory-bank.dll serve
 ```
+
+**On Mac and Linux this is untested.** Nothing is known to be wrong with it —
+`agent-memory-bank.dll` is IL rather than a Windows library, git is invoked off
+the `PATH` the same way on every platform, and the native SQLite for linux-x64,
+linux-arm64, osx-x64 and osx-arm64 already ships in `publish/runtimes/`. But
+"should work" is not "does work", and nobody has run `dotnet test` on either
+yet. If you try it, the results are worth an issue whichever way they go.
 
 If you only want to try it out, you can skip this and go through the SDK
 instead — same commands, with `--` separating dotnet's arguments from the
