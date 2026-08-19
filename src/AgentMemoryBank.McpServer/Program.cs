@@ -2,6 +2,7 @@ using AgentMemoryBank;
 using AgentMemoryBank.Database;
 using AgentMemoryBank.Indexing;
 using AgentMemoryBank.Models;
+using AgentMemoryBank.Verification;
 
 namespace AgentMemoryBank.McpServer;
 
@@ -21,6 +22,8 @@ internal static class Program
                 "index" => Index(args[1..]),
                 "search" => Search(args[1..]),
                 "stats" => Stats(args[1..]),
+                "note" => Note(args[1..]),
+                "verify" => VerifyNotes(args[1..]),
                 "serve" => StdioServer.RunAsync().GetAwaiter().GetResult(),
                 "help" or "--help" or "-h" => Help(0),
                 var unknown => Fail($"unknown command '{unknown}'"),
@@ -60,6 +63,13 @@ internal static class Program
 
               stats  [--db PATH]
                      Row counts per repository.
+
+              note add --claim TEXT --evidence TEXT [--why TEXT] [--kind K]
+                       [--confidence C] [--tags a,b] [--db PATH]
+                     Record a finding by hand. Evidence is required and checked.
+
+              verify [--id N] [--db PATH]
+                     Re-check that the code each note cites still says what it says.
 
               serve  Run as an MCP stdio server, exposing memory_search, memory_get and
                      memory_stats. Speaks JSON-RPC on stdin/stdout; logs go to stderr.
@@ -170,6 +180,79 @@ internal static class Program
 
     private static string Collapse(string text) =>
         string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+    /// <summary>Hand-written notes: the backfill path, and the honest test of the schema.</summary>
+    private static int Note(string[] args)
+    {
+        if (args.FirstOrDefault() != "add") return Fail("usage: note add --claim TEXT --evidence TEXT [...]");
+
+        var options = CommandLine.Parse(args[1..]);
+        if (options.Claim is null || options.Evidence is null)
+            return Fail("note add needs both --claim and --evidence");
+
+        using var db = MemoryDatabase.Open(options.Db);
+        var draft = new NoteDraft
+        {
+            Claim = options.Claim,
+            Evidence = options.Evidence,
+            Rationale = options.Why,
+            Kind = options.Kind ?? NoteKind.Finding,
+            Confidence = options.Confidence ?? AgentMemoryBank.Models.Confidence.Inferred,
+            Tags = options.Tags,
+        };
+
+        switch (NoteStore.Add(db, draft, options.Root))
+        {
+            case NoteWriteResult.Accepted accepted:
+                Console.WriteLine($"note {accepted.Id} recorded{Describe(accepted)}");
+                return 0;
+            case NoteWriteResult.Rejected rejected:
+                Console.Error.WriteLine($"rejected [{rejected.Code}]: {rejected.Message}");
+                Console.Error.WriteLine($"  example claim:    {rejected.Example.Claim}");
+                Console.Error.WriteLine($"  example evidence: {rejected.Example.Evidence}");
+                return 1;
+            default:
+                return 1;
+        }
+    }
+
+    /// <summary>
+    /// Three outcomes worth telling apart: linked to the index, anchored to a
+    /// file outside it, or not anchored at all. Only the last cannot be
+    /// re-checked when the code moves.
+    /// </summary>
+    private static string Describe(NoteWriteResult.Accepted accepted) =>
+        accepted.IsGrounded
+            ? $", anchored to {accepted.CitedChunkIds.Count} indexed location(s)"
+            : accepted.IsVerifiable
+                ? ", anchored to a file outside the index (vendored or skipped); verify can still check it"
+                : " (evidence is a command or measurement; nothing anchors it to code)";
+
+    private static int VerifyNotes(string[] args)
+    {
+        var options = CommandLine.Parse(args);
+        using var db = MemoryDatabase.Open(options.Db);
+        var results = EvidenceVerifier.Verify(db, options.Id, options.Root);
+
+        if (results.Count == 0) { Console.WriteLine("no notes to verify"); return 0; }
+
+        foreach (var result in results)
+        {
+            var marker = result.NeedsAttention ? "!" : " ";
+            Console.WriteLine($" {marker} [note {result.NoteId}] {Label(result.Status),-13} {result.Detail}");
+        }
+
+        var attention = results.Count(r => r.NeedsAttention);
+        Console.WriteLine();
+        Console.WriteLine($"{results.Count} checked, {attention} need a look");
+        return attention > 0 ? 1 : 0;
+    }
+
+    private static string Label(VerificationStatus status) => status switch
+    {
+        VerificationStatus.NotAnchored => "not anchored",
+        _ => status.ToString().ToLowerInvariant(),
+    };
 
     private static int Stats(string[] args)
     {

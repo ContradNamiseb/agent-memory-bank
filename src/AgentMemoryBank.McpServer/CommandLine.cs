@@ -18,6 +18,12 @@ internal sealed record CommandLine
     public bool Verbose { get; private init; }
     public string? Note { get; private init; }
     public string Query { get; private init; } = "";
+    public string? Claim { get; private init; }
+    public string? Evidence { get; private init; }
+    public string? Why { get; private init; }
+    public Confidence? Confidence { get; private init; }
+    public List<string> Tags { get; } = [];
+    public long? Id { get; private init; }
 
     public static CommandLine Parse(string[] args)
     {
@@ -39,6 +45,14 @@ internal sealed record CommandLine
                 case "--kind": options = options with { Kind = ParseKind(Next(arg)) }; break;
                 case "--limit": options = options with { Limit = int.Parse(Next(arg)) }; break;
                 case "--note": options = options with { Note = Next(arg) }; break;
+                case "--claim": options = options with { Claim = Next(arg) }; break;
+                case "--evidence": options = options with { Evidence = Next(arg) }; break;
+                case "--why": options = options with { Why = Next(arg) }; break;
+                case "--confidence": options = options with { Confidence = ParseConfidence(Next(arg)) }; break;
+                case "--id": options = options with { Id = long.Parse(Next(arg)) }; break;
+                case "--tags":
+                    options.Tags.AddRange(Next(arg).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                    break;
                 case "--full": options = options with { Full = true }; break;
                 case "-v" or "--verbose": options = options with { Verbose = true }; break;
                 default:
@@ -55,6 +69,12 @@ internal sealed record CommandLine
             Repo = options.Repos.Count == 1 ? options.Repos[0] : null,
         };
     }
+
+    private static Confidence ParseConfidence(string value) =>
+        Enum.TryParse<Confidence>(value, ignoreCase: true, out var confidence)
+            ? confidence
+            : throw new ArgumentException(
+                $"unknown confidence '{value}' (expected {string.Join(", ", Enum.GetNames<Confidence>()).ToLowerInvariant()})");
 
     private static NoteKind ParseKind(string value) =>
         Enum.TryParse<NoteKind>(value, ignoreCase: true, out var kind)

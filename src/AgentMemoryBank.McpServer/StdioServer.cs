@@ -31,7 +31,8 @@ internal static class StdioServer
                 };
             })
             .WithStdioServerTransport()
-            .WithTools<McpTools>();
+            .WithTools<McpTools>()
+            .WithTools<McpWriteTools>();
 
         using var host = builder.Build();
         await host.RunAsync(cancellationToken);

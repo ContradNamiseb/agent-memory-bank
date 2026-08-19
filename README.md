@@ -37,8 +37,8 @@ agent re-derives, badly, at the start of every session.
 |---|-----------|-------|
 | 1 | Schema + Phase A deterministic indexer | **done** |
 | 2 | MCP server, search/get only | **done** |
-| 3 | Notes + write path, evidence enforced | next |
-| 4 | Phase B git-history mining | not started |
+| 3 | Notes + write path, evidence enforced | **done** |
+| 4 | Phase B git-history mining | next |
 | 5 | Additional MCP clients | not started |
 | 6 | Phase C LLM extraction | not started |
 
@@ -117,8 +117,29 @@ store, so a misbehaving client cannot corrupt it.
 | `memory_search(query, repo?, kind?, limit?)` | BM25 over notes and chunks, notes first, every hit cited |
 | `memory_get(kind, id)` | One chunk or note in full, with line numbers |
 | `memory_stats()` | What the store holds, and whether it has been indexed at all |
+| `memory_note_add(claim, evidence, ...)` | Record a durable finding. Evidence is required and checked |
+| `memory_note_supersede(id, claim, evidence, why)` | Correct a note without deleting the record of being wrong |
+| `memory_verify(id?)` | Re-check that cited code still says what the note says |
 
-Two details that matter more than they look:
+Notes are the product; the file index exists to ground them. Three rules hold
+the quality line:
+
+**Evidence is mandatory at write time.** A claim needs a `repo/path:line`
+citation, or a command or measurement someone could re-run. This single
+constraint is what stops the store filling with plausible-sounding sludge — a
+claim with nothing behind it is indistinguishable from a guess once the session
+that made it has ended.
+
+**Refusals carry a worked example.** An opaque rejection is how an autonomous
+caller gets stuck retrying the same malformed write. Every refusal returns a
+reason code from a closed set (`missing_evidence`, `unresolvable_anchor`,
+`duplicate_claim`, `claim_not_falsifiable`) plus a correct note to copy.
+
+**Nothing is deleted.** A claim that turned out wrong is superseded, keeping the
+original and the reason it changed — often the more useful fact, because it stops
+the same wrong conclusion being reached twice.
+
+Two more details that matter more than they look:
 
 **The trigger lives in the tool description.** Nothing queries a memory bank
 unless something tells it to, and clients differ in whether they load repository
@@ -129,6 +150,28 @@ default is written there, not only in a project's own instructions.
 **An empty result distinguishes "nothing recorded" from "never indexed."** A
 store that has not been indexed answers every question with silence, and silence
 reads like evidence of absence. The tools say which one it is.
+
+## Staleness
+
+A note describing code that has since changed is worse than no note. But hashing
+the cited file is far too blunt: adding three lines at the top changes the hash
+while leaving the cited code untouched, and if every commit produces a wave of
+false alarms, the alarms get ignored — which is the same as not having them.
+
+So `memory_verify` resolves cheapest-first, and only the last step surfaces:
+
+1. Content hash unchanged — fine, no further work.
+2. Hash changed, but the anchor line is found exactly once — silently re-anchor
+   and update the stored line. This is the common case and is meant to be invisible.
+3. Anchor gone or ambiguous — fall back to the enclosing symbol. Still there,
+   report `moved`; gone too, report `broken`.
+
+The anchor is the **cited line itself** wherever it can serve, and that
+preference is the point rather than a tie-breaker. Anchoring to the explanatory
+comment above a constant would keep matching after someone changed the constant,
+and verification would report the note as fine while the thing it describes had
+moved out from under it. Only when the cited line cannot anchor — blank, trivial
+like `}`, or repeated elsewhere — does the search widen to its neighbours.
 
 ## How Phase A works
 
