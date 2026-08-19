@@ -31,20 +31,6 @@ These are *decisions and hazards*, not code. Grep cannot find them because they
 are written down nowhere. That is the thing worth storing — and the thing an
 agent re-derives, badly, at the start of every session.
 
-## Status
-
-| # | Milestone | State |
-|---|-----------|-------|
-| 1 | Schema + Phase A deterministic indexer | **done** |
-| 2 | MCP server, search/get only | **done** |
-| 3 | Notes + write path, evidence enforced | **done** |
-| 4 | Phase B git-history mining | next |
-| 5 | Additional MCP clients | not started |
-| 6 | Phase C LLM extraction | not started |
-
-Milestone 3 is the real test: if hand-written notes do not earn their keep,
-automated ones will not either.
-
 ## Requirements
 
 - .NET SDK 10 (developed against 10.0.302)
@@ -56,8 +42,10 @@ automated ones will not either.
 
 ## Getting started
 
-Point it at some repositories. Copy `memory-bank.local.json.example` to
-`memory-bank.local.json` — gitignored, and the only place your paths live:
+### 1. Point it at your repositories
+
+Copy `memory-bank.local.json.example` to `memory-bank.local.json`. It is
+gitignored, and it is the only place your paths live:
 
 ```json
 {
@@ -66,60 +54,186 @@ Point it at some repositories. Copy `memory-bank.local.json.example` to
 }
 ```
 
-Then:
-
-```bash
-dotnet build
-dotnet test
-
-# Phase A: index tracked, non-vendored source files. Incremental by content hash.
-dotnet run --project src/AgentMemoryBank.McpServer -- index -v
-dotnet run --project src/AgentMemoryBank.McpServer -- index --full   # re-chunk everything
-
-# BM25 over notes and chunks; notes ranked first.
-dotnet run --project src/AgentMemoryBank.McpServer -- search "some_identifier"
-dotnet run --project src/AgentMemoryBank.McpServer -- search "retry backoff" --full
-dotnet run --project src/AgentMemoryBank.McpServer -- stats
-```
-
 Every setting can also come from the environment, which is handy for one-off
 runs: `MEMORY_BANK_REPO_ROOT`, `MEMORY_BANK_REPOS`, `MEMORY_BANK_DB`,
 `MEMORY_BANK_SETTINGS`.
 
-## Using it as an MCP server
+### 2. Publish
 
-Publish once, then point clients at the produced executable rather than at
-`dotnet run`, which would rebuild on every launch:
+Publish once, then point everything — your own shell and every MCP client — at
+the produced executable. Launching the server through `dotnet run` instead makes
+it rebuild on each start, which a client sees as a server that is slow or hung:
 
 ```bash
+dotnet test
 dotnet publish src/AgentMemoryBank.McpServer -c Release -o publish
 ```
 
-Register it with Claude Code:
+That produces `publish/agent-memory-bank.exe` (`publish/agent-memory-bank` on
+Linux and macOS). It is not on your PATH, so every command below is written
+against the full path to it — substitute your own.
+
+If you only want to try it out, you can skip this and go through the SDK
+instead — same commands, with `--` separating dotnet's arguments from the
+tool's:
 
 ```bash
-claude mcp add memory-bank --scope user -- /full/path/to/publish/agent-memory-bank.exe serve
+dotnet run --project src/AgentMemoryBank.McpServer -- index -v
+dotnet run --project src/AgentMemoryBank.McpServer -- search "some_identifier"
+dotnet run --project src/AgentMemoryBank.McpServer -- stats
 ```
 
-Or, for VS Code, a `.vscode/mcp.json` in the workspace:
+That is fine for a look around. Publish before wiring up a client, though:
+`dotnet run` rebuilds on every launch, and an MCP client reads that delay as a
+server that failed to start.
+
+### 3. Build the index
+
+```bash
+cd publish
+
+# Phase A: index tracked, non-vendored source files. Incremental by content hash.
+./agent-memory-bank index -v
+./agent-memory-bank index --full        # re-chunk everything
+
+# Phase B: mine commit messages for historical rationale and decisions.
+./agent-memory-bank mine-git -v
+
+./agent-memory-bank stats
+```
+
+Re-run `index` whenever you want; it hashes first and skips what has not
+changed, so a few hundred files take about a second.
+
+Everything the server exposes over MCP also works from the shell, which is the
+quickest way to confirm the store holds what you think it does:
+
+```bash
+# BM25 over notes and chunks; notes ranked first.
+./agent-memory-bank search "some_identifier"
+./agent-memory-bank search "checkpoint resume" --full
+
+# Inspect one note or chunk in full, with line numbers.
+./agent-memory-bank get note 1
+./agent-memory-bank get chunk 1220
+
+./agent-memory-bank handoff latest
+```
+
+### 4. Wire it into your agent
+
+The server speaks MCP over stdio, so any client that can launch a command can
+use it. Give each one the **absolute** path to the published executable and the
+single argument `serve`.
+
+#### Claude Code
+
+One command, no file to edit. `--scope user` makes it available in every
+project rather than only the current one:
+
+```bash
+claude mcp add memory-bank --scope user -- C:/path/to/publish/agent-memory-bank.exe serve
+```
+
+Verify it connected — the server should be listed, and its tools appear as
+`memory_*`:
+
+```bash
+claude mcp list
+```
+
+Claude Code reads MCP configuration once at startup, so restart any session
+that was already open before adding it.
+
+#### Google Antigravity
+
+Add to `~/.gemini/config/mcp_config.json`:
 
 ```json
-{ "servers": { "memory-bank": {
-    "command": "/full/path/to/publish/agent-memory-bank.exe",
-    "args": ["serve"] } } }
+{
+  "mcpServers": {
+    "memory-bank": {
+      "command": "C:/path/to/publish/agent-memory-bank.exe",
+      "args": ["serve"]
+    }
+  }
+}
 ```
 
-Three read-only tools are exposed. Nothing in this milestone can write to the
-store, so a misbehaving client cannot corrupt it.
+#### VS Code and GitHub Copilot
 
-| tool | purpose |
-|------|---------|
-| `memory_search(query, repo?, kind?, limit?)` | BM25 over notes and chunks, notes first, every hit cited |
-| `memory_get(kind, id)` | One chunk or note in full, with line numbers |
-| `memory_stats()` | What the store holds, and whether it has been indexed at all |
-| `memory_note_add(claim, evidence, ...)` | Record a durable finding. Evidence is required and checked |
-| `memory_note_supersede(id, claim, evidence, why)` | Correct a note without deleting the record of being wrong |
-| `memory_verify(id?)` | Re-check that cited code still says what the note says |
+Create `.vscode/mcp.json` in your workspace, or add the same block to your user
+settings to get it everywhere:
+
+```json
+{
+  "servers": {
+    "memory-bank": {
+      "command": "C:/path/to/publish/agent-memory-bank.exe",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+#### Cursor and Windsurf
+
+Add to `.cursor/mcp.json` or `.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "memory-bank": {
+      "command": "C:/path/to/publish/agent-memory-bank.exe",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+Configuring more than one client is the point rather than a nuisance: they read
+the same database, so a note written from Claude Code is there when Antigravity
+next asks.
+
+## The MCP tool surface
+
+Nine tools, across search, durable notes, verification, and cross-agent
+handoffs. Every search result carries a citation, and every write demands one:
+
+| Tool | Category | Purpose |
+| :--- | :--- | :--- |
+| `memory_search(query, repo?, kind?, limit?)` | Search | BM25 over notes and chunks, notes first, every hit cited |
+| `memory_get(kind, id)` | Inspection | One chunk or note in full, with line numbers |
+| `memory_stats()` | Inspection | What the store holds, and row counts per repo |
+| `memory_note_add(claim, evidence, ...)` | Write | Record a durable finding. Evidence is required and checked |
+| `memory_note_supersede(id, claim, evidence, why)` | Write | Correct a note without deleting the record of being wrong |
+| `memory_verify(id?)` | Verification | Re-check that cited code still says what the note says |
+| `memory_handoff_save(agent, topic, summary, next_steps, ...)` | Continuity | Save a session handoff before switching agents or hitting limits |
+| `memory_handoff_latest(agent?)` | Continuity | Retrieve the latest handoff so an incoming agent resumes instantly |
+| `memory_handoff_list(limit?, agent?)` | Continuity | List past session handoffs across all AI tools |
+
+---
+
+## Moving a task between agents
+
+Usage limits and context limits both end sessions mid-task. The store is what
+survives them:
+
+1. **Before leaving your current agent (e.g. Antigravity)**:
+   Say: *"Save a session handoff to memory bank with our progress and next steps."*
+   The agent calls `memory_handoff_save` with what was finished, active files, and pending next steps.
+
+2. **When opening your next agent (e.g. Claude Code or VS Code Chat)**:
+   Say: *"Read the latest handoff from memory bank and continue the task."*
+   The incoming agent calls `memory_handoff_latest` via MCP, reads the exact state, and picks up immediately with zero re-prompting.
+
+3. **In Terminal**:
+   You can also check active handoff status anytime:
+   ```bash
+   ./agent-memory-bank handoff latest
+   ```
+
+---
 
 Notes are the product; the file index exists to ground them. Three rules hold
 the quality line:
@@ -173,6 +287,14 @@ and verification would report the note as fine while the thing it describes had
 moved out from under it. Only when the cited line cannot anchor — blank, trivial
 like `}`, or repeated elsewhere — does the search widen to its neighbours.
 
+Notes mined from commit messages are **unanchored by design**. A commit
+message says which commit a change belongs to, never which line, so their
+evidence is the commit itself (`git show <sha> -- <path>`) and `memory_verify`
+reports them as not anchored. Synthesising a `path:1` citation would pass the
+evidence gate while anchoring every one of them to a licence header, and
+verification would then call them healthy forever — including after the code
+they describe was deleted.
+
 ## How Phase A works
 
 `git ls-files` per repository, skipping vendored trees. Hash each file, skip
@@ -197,7 +319,7 @@ src/AgentMemoryBank.Core/        class library
   Database/                      open, schema, FTS5 capability probe, BM25 search
   Models/                        Note, Chunk, SearchResult
   Indexing/                      git scanning, Phase A indexer, chunkers
-  Verification/                  evidence anchors — arrives with Milestone 3
+  Verification/                  evidence anchors and staleness resolution
 src/AgentMemoryBank.McpServer/   the executable: index / search / stats / serve
 test/AgentMemoryBank.Tests/      xUnit
 reference/prototype-js/          the JS spike this was ported from, kept for diffing
