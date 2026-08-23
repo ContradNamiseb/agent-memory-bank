@@ -44,7 +44,8 @@ public static class NoteStore
     /// <summary>
     /// Record a note, or refuse it with a reason and a worked example.
     /// </summary>
-    public static NoteWriteResult Add(SqliteConnection db, NoteDraft draft, string? repoRoot = null)
+    public static NoteWriteResult Add(SqliteConnection db, NoteDraft draft, string? repoRoot = null,
+        bool dryRun = false)
     {
         var claim = draft.Claim?.Trim() ?? "";
         var evidence = draft.Evidence?.Trim() ?? "";
@@ -98,6 +99,23 @@ public static class NoteStore
                 $"'{citations[0]}' points at no file that exists: check the repository name, the " +
                 "path, and the line number");
 
+        // Anything the author should know BEFORE the note lands, not after. Both of
+        // these used to surface only in the receipt, by which point the note was
+        // already written and the tokens already spent.
+        var warnings = new List<string>();
+        if (anchorText is null)
+            warnings.Add("evidence carries no resolvable 'repo/path:line', so memory_verify cannot " +
+                         "re-check this note automatically; add one if the claim is about code");
+        if (FindSimilar(db, claim) is { } near)
+            warnings.Add($"note {near.Id} says something close: \"{near.Claim}\". If this replaces " +
+                         "it, use memory_note_supersede instead of adding a second copy.");
+
+        if (dryRun)
+            return new NoteWriteResult.Accepted(0, citedChunks, anchorText is not null)
+            {
+                Warnings = warnings,
+            };
+
         using var transaction = db.BeginTransaction();
         using var insert = db.Prepare("""
             INSERT INTO note(claim, rationale, evidence, anchor_symbol, anchor_text,
@@ -124,7 +142,10 @@ public static class NoteStore
             AddEdge(db, transaction, "note", id, "chunk", chunkId, "cites");
 
         transaction.Commit();
-        return new NoteWriteResult.Accepted(id, citedChunks, anchorText is not null);
+        return new NoteWriteResult.Accepted(id, citedChunks, anchorText is not null)
+        {
+            Warnings = warnings,
+        };
     }
 
     /// <summary>
@@ -199,6 +220,61 @@ public static class NoteStore
         }
         return true;
     }
+
+    /// <summary>
+    /// The nearest existing claim, when it is near enough to be worth mentioning.
+    ///
+    /// <para><see cref="FindDuplicate"/> only catches a byte-identical claim, which in
+    /// practice catches almost nothing: the same fact written twice is written two
+    /// different ways. This runs the claim through the note index and then measures
+    /// how much of the vocabulary the two share, so a rephrasing is caught but a
+    /// genuinely different claim about the same subject is not.</para>
+    ///
+    /// <para>Deliberately advisory. Overlap is a weak signal, and blocking on it
+    /// would refuse legitimate notes about a topic already covered.</para>
+    /// </summary>
+    public static (long Id, string Claim)? FindSimilar(SqliteConnection db, string claim,
+        double threshold = 0.5)
+    {
+        var terms = Significant(claim);
+        if (terms.Count < 3) return null;
+
+        try
+        {
+            using var cmd = db.Prepare("""
+                SELECT n.id, n.claim, bm25(note_fts, 5.0, 1.0, 2.0) AS score
+                FROM note_fts JOIN note n ON n.id = note_fts.rowid
+                WHERE note_fts MATCH $match AND n.superseded_by IS NULL
+                ORDER BY score LIMIT 5
+                """, "$match");
+
+            var candidates = cmd.SetAll(string.Join(" OR ", terms.Select(t => $"\"{t}\"")))
+                .Query(r => (Id: r.GetInt64("id"), Claim: r.GetString("claim")));
+
+            foreach (var candidate in candidates)
+            {
+                var other = Significant(candidate.Claim);
+                if (other.Count == 0) continue;
+                var shared = terms.Intersect(other).Count();
+                // Jaccard against the smaller set: a short claim fully contained in a
+                // longer one is still a restatement of it.
+                if (shared / (double)Math.Min(terms.Count, other.Count) >= threshold)
+                    return candidate;
+            }
+        }
+        catch (SqliteException)
+        {
+            // A claim that will not parse as an FTS query is not worth failing a write over.
+        }
+        return null;
+    }
+
+    /// <summary>Content words of a claim, lowercased: long enough to carry meaning.</summary>
+    private static HashSet<string> Significant(string text) =>
+        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => new string(t.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant())
+            .Where(t => t.Length >= 4)
+            .ToHashSet();
 
     private static long? FindDuplicate(SqliteConnection db, string claim)
     {

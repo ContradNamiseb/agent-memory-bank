@@ -42,7 +42,9 @@ public sealed partial record Citation(string Repo, string Path, int Line)
     public static bool LooksReproducible(string? evidence)
     {
         if (string.IsNullOrWhiteSpace(evidence)) return false;
-        return CommandRegex().IsMatch(evidence) || MeasurementRegex().IsMatch(evidence);
+        return CommandRegex().IsMatch(evidence)
+            || MeasurementRegex().IsMatch(evidence)
+            || CommitRegex().IsMatch(evidence);
     }
 
     // repo/path.ext:123  or  repo:path.ext:123
@@ -53,6 +55,11 @@ public sealed partial record Citation(string Repo, string Path, int Line)
     [GeneratedRegex(@"(^|\s)(--?[A-Za-z][\w-]*|\S+\.(py|sh|ps1|exe|cmd|js|mjs)\b|(git|dotnet|python|py|node|npm|cargo|make|bash|pwsh)\s+\S+)",
         RegexOptions.IgnoreCase)]
     private static partial Regex CommandRegex();
+
+    // A bare commit SHA. Reproducible in the same sense a command is: "git show <sha>"
+    // re-runs it. Bounded at 7 so a short hex literal in prose is not mistaken for one.
+    [GeneratedRegex(@"(^|\s)[0-9a-f]{7,40}(\s|$)")]
+    private static partial Regex CommitRegex();
 
     // A number carrying meaning: "RMSE 0.015", "p95 = 240ms", "12% faster".
     [GeneratedRegex(@"\d+(\.\d+)?\s*(%|ms|s\b|MB|GB|x\b)|[A-Za-z_][\w]*\s*[=:]\s*-?\d+(\.\d+)?")]

@@ -44,6 +44,16 @@ public abstract record NoteWriteResult
 
         /// <summary>True when memory_verify can re-check this note against the file.</summary>
         public bool IsVerifiable => Anchored;
+
+        /// <summary>
+        /// Things worth saying about an accepted write: evidence that cannot be
+        /// re-verified, an existing note that says nearly the same thing.
+        ///
+        /// <para>Warnings rather than rejections on purpose. Neither case is
+        /// wrong often enough to refuse the write, and a store that refuses
+        /// borderline notes teaches its callers to stop writing them.</para>
+        /// </summary>
+        public IReadOnlyList<string> Warnings { get; init; } = [];
     }
 
     /// <summary>The note was refused, with everything needed to fix it.</summary>

@@ -46,8 +46,12 @@ public sealed class McpTools
         chosen. Also search before concluding that a default is safe: recorded hazards are mostly
         defaults that destroy data or limits that fail silently.
 
-        Queries are matched as phrases, so an identifier such as some_config_key finds that exact
-        identifier. Returns nothing when the store is empty rather than guessing.
+        Query with SHORT KEYWORDS, not a sentence: 'wdl_spread' or 'retry jitter', not 'what
+        wdl spread should I use'. Terms are ANDed, so every extra word narrows the result. Each
+        term is matched as a phrase, so an identifier such as some_config_key finds that exact
+        identifier. If nothing matches every term the search retries with any term and says so.
+
+        Returns nothing when the store is empty rather than guessing.
         """)]
     public static string Search(
         [Description("What to look for. An identifier, a phrase, or a few keywords.")]
@@ -56,8 +60,14 @@ public sealed class McpTools
         string? repo = null,
         [Description("Limit notes to one kind: decision, hazard, howto, or finding.")]
         string? kind = null,
-        [Description("Maximum results per section. Defaults to 10.")]
-        int limit = 10)
+        [Description("Maximum notes to return. Defaults to 10.")]
+        int limit = 10,
+        [Description("Return only recorded notes, skipping the indexed source that grounds them. "
+                     + "Use when you already have the code open and want the decisions, not the lines.")]
+        bool notes_only = false,
+        [Description("Maximum indexed-source results. Defaults to 3 - the notes are the answer, "
+                     + "the chunks are only there so the answer can be checked.")]
+        int chunk_limit = 3)
     {
         if (string.IsNullOrWhiteSpace(query)) return "Error: query is empty.";
 
@@ -74,7 +84,8 @@ public sealed class McpTools
         SearchResult result;
         try
         {
-            result = MemorySearch.Search(db, query, repo, noteKind, Math.Clamp(limit, 1, 50));
+            result = MemorySearch.Search(db, query, repo, noteKind, Math.Clamp(limit, 1, 50),
+                Math.Clamp(chunk_limit, 0, 50), notes_only);
         }
         catch (ArgumentException e)
         {

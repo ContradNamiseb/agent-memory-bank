@@ -45,14 +45,30 @@ public static class ToolResponses
         if (result.Total == 0)
         {
             var stats = MemorySearch.Stats(db);
-            return stats.Files == 0
-                ? $"No results for '{result.Query}'. The store is empty: run the indexer before " +
-                  "treating this as evidence that nothing is recorded."
-                : $"No results for '{result.Query}'. The store holds {stats.Files} files and " +
-                  $"{stats.Notes} notes, so this query genuinely matched nothing.";
+            if (stats.Files == 0)
+                return $"No results for '{result.Query}'. The store is empty: run the indexer before " +
+                       "treating this as evidence that nothing is recorded.";
+
+            // Say which passes ran. Claiming a query "genuinely matched nothing" when
+            // only the AND pass was tried is how a caller concludes the store is empty
+            // and stops asking.
+            var tried = MemorySearch.CanLoosen(result.Query)
+                ? "Both an all-terms and an any-term pass were tried"
+                : "Searched as a single term";
+            return $"No results for '{result.Query}'. The store holds {stats.Files} files and " +
+                   $"{stats.Notes} notes. {tried}, so nothing on this subject is recorded. " +
+                   "Try fewer or different keywords before concluding that.";
         }
 
         var text = new StringBuilder();
+
+        if (result.Mode == MatchMode.Loosened)
+        {
+            text.AppendLine($"_No result matched every term of '{result.Query}'. These are **loosened** " +
+                            "matches - any term, best first - so treat them as the nearest thing on file, " +
+                            "not as a precise answer._");
+            text.AppendLine();
+        }
 
         if (result.Notes.Count > 0)
         {

@@ -22,7 +22,7 @@ public static class MemorySearch
     /// Quoting also stops a stray '*' or '(' in a code query from being read as
     /// FTS syntax and throwing.</para>
     /// </summary>
-    public static string BuildMatchExpression(string query)
+    public static string BuildMatchExpression(string query, MatchMode mode = MatchMode.Strict)
     {
         var raw = query.Trim();
         if (raw.Length == 0) throw new ArgumentException("empty query", nameof(query));
@@ -37,7 +37,27 @@ public static class MemorySearch
             .ToList();
 
         if (terms.Count == 0) throw new ArgumentException($"no searchable terms in: {query}", nameof(query));
-        return string.Join(' ', terms);
+
+        // Space-separated terms are ANDed by FTS5. That is the right default, but it
+        // means a descriptive phrase - the thing a caller naturally types - fails
+        // whenever the store happens not to use one of the words. Loosened mode ORs
+        // them so Search can retry rather than report nothing.
+        return mode == MatchMode.Loosened
+            ? string.Join(" OR ", terms)
+            : string.Join(' ', terms);
+    }
+
+    /// <summary>
+    /// Whether an OR retry could return anything the AND pass did not. A single term
+    /// is identical under both, and a hand-written advanced query is passed through
+    /// verbatim, so neither is worth running twice.
+    /// </summary>
+    public static bool CanLoosen(string query)
+    {
+        var raw = query.Trim();
+        if (raw.Contains('"') || ContainsOperator(raw)) return false;
+        return raw.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Count(t => t.Any(char.IsLetterOrDigit)) > 1;
     }
 
     private static bool ContainsOperator(string query) =>
@@ -46,7 +66,7 @@ public static class MemorySearch
 
     /// <summary>BM25 over chunk bodies, with the symbol column weighted up.</summary>
     public static IReadOnlyList<ChunkHit> SearchChunks(SqliteConnection db, string query,
-        string? repo = null, string? lang = null, int limit = 10)
+        string? repo = null, string? lang = null, int limit = 10, MatchMode mode = MatchMode.Strict)
     {
         using var cmd = db.Prepare("""
             SELECT c.id, f.repo, f.path, f.lang, c.kind, c.symbol,
@@ -63,7 +83,7 @@ public static class MemorySearch
             LIMIT $limit
             """, "$match", "$repo", "$lang", "$limit");
 
-        return cmd.SetAll(BuildMatchExpression(query), repo, lang, limit)
+        return cmd.SetAll(BuildMatchExpression(query, mode), repo, lang, limit)
             .Query(r => new ChunkHit(
                 Id: r.GetInt64("id"),
                 Repo: r.GetString("repo"),
@@ -83,7 +103,8 @@ public static class MemorySearch
     /// default: they are kept as a record of having been wrong, not as an answer.
     /// </summary>
     public static IReadOnlyList<NoteHit> SearchNotes(SqliteConnection db, string query,
-        NoteKind? kind = null, int limit = 10, bool includeSuperseded = false)
+        NoteKind? kind = null, int limit = 10, bool includeSuperseded = false,
+        MatchMode mode = MatchMode.Strict)
     {
         using var cmd = db.Prepare("""
             SELECT n.id, n.claim, n.rationale, n.evidence, n.kind, n.confidence,
@@ -98,7 +119,7 @@ public static class MemorySearch
             LIMIT $limit
             """, "$match", "$kind", "$includeSuperseded", "$limit");
 
-        return cmd.SetAll(BuildMatchExpression(query), kind?.ToString().ToLowerInvariant(),
+        return cmd.SetAll(BuildMatchExpression(query, mode), kind?.ToString().ToLowerInvariant(),
                 includeSuperseded ? 1 : 0, limit)
             .Query(r => new NoteHit(
                 Id: r.GetInt64("id"),
@@ -117,12 +138,30 @@ public static class MemorySearch
     private static T? ParseEnum<T>(string? value) where T : struct =>
         Enum.TryParse<T>(value, ignoreCase: true, out var parsed) ? parsed : null;
 
-    /// <summary>Notes first, then the chunks that ground them.</summary>
+    /// <summary>
+    /// Notes first, then the chunks that ground them.
+    ///
+    /// <para>Runs the strict (AND) pass first. If that returns nothing and the query
+    /// has more than one term, it retries with OR and flags the result as loosened,
+    /// rather than reporting an absence the store cannot actually vouch for. Chunks
+    /// default to a shorter list than notes: the notes are the answer, the chunks are
+    /// only there so it can be checked.</para>
+    /// </summary>
     public static SearchResult Search(SqliteConnection db, string query,
-        string? repo = null, NoteKind? kind = null, int limit = 10) =>
-        new(query,
+        string? repo = null, NoteKind? kind = null, int limit = 10,
+        int chunkLimit = 3, bool notesOnly = false)
+    {
+        var strict = new SearchResult(query,
             SearchNotes(db, query, kind, limit),
-            SearchChunks(db, query, repo, limit: limit));
+            notesOnly ? [] : SearchChunks(db, query, repo, limit: chunkLimit));
+
+        if (strict.Total > 0 || !CanLoosen(query)) return strict;
+
+        return new SearchResult(query,
+            SearchNotes(db, query, kind, limit, mode: MatchMode.Loosened),
+            notesOnly ? [] : SearchChunks(db, query, repo, limit: chunkLimit, mode: MatchMode.Loosened),
+            MatchMode.Loosened);
+    }
 
     /// <summary>Full text of one chunk, with the file columns needed to cite it.</summary>
     public static (Chunk Chunk, string Repo, string Path, string? GitRev)? GetChunk(SqliteConnection db, long id)

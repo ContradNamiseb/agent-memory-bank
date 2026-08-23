@@ -35,10 +35,14 @@ public sealed class McpWriteTools
         why a value is what it is, what a default silently does, what an earlier attempt got wrong.
         Do not write notes restating what the code plainly says.
 
-        Evidence is mandatory and is enforced: give a 'repo/path:line' citation, or a command or
-        measurement someone could re-run. A claim with nothing behind it is indistinguishable from
-        a guess once the session ends, so it is refused. Refusals come back with a reason code and
-        a worked example to copy — read it rather than retrying the same call.
+        Evidence is mandatory and is enforced: give a 'repo/path:line' citation, a commit SHA, or
+        a command or measurement someone could re-run. A claim with nothing behind it is
+        indistinguishable from a guess once the session ends, so it is refused. Refusals come back
+        with a reason code and a worked example to copy — read it rather than retrying the same call.
+
+        Prefer a 'repo/path:line' citation where the claim is about code: only that can be
+        re-checked later by memory_verify. Pass dry_run=true to see whether the evidence will be
+        accepted, and whether a note already says something similar, before spending the write.
         """)]
     public static string Add(
         [Description("One sentence, falsifiable. State what is true, not what you wondered.")]
@@ -52,7 +56,11 @@ public sealed class McpWriteTools
         [Description("measured, inferred, or assumed. Be honest: this is how a reader weighs it.")]
         string confidence = "inferred",
         [Description("Comma-separated tags for grouping, e.g. 'calibration,loader'.")]
-        string? tags = null)
+        string? tags = null,
+        [Description("Validate and report what would happen without writing anything. Use this "
+                     + "first when unsure whether the evidence will be accepted, or whether "
+                     + "something close is already recorded.")]
+        bool dry_run = false)
     {
         if (!Enum.TryParse<NoteKind>(kind, ignoreCase: true, out var noteKind))
             return Envelope("rejected", "invalid_kind",
@@ -72,9 +80,9 @@ public sealed class McpWriteTools
             Tags = tags?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [],
         };
 
-        return NoteStore.Add(db, draft) switch
+        return NoteStore.Add(db, draft, dryRun: dry_run) switch
         {
-            NoteWriteResult.Accepted accepted => Accepted(accepted, db),
+            NoteWriteResult.Accepted accepted => dry_run ? Preview(accepted) : Accepted(accepted, db),
             NoteWriteResult.Rejected rejected => Envelope("rejected", rejected.Code, rejected.Message, rejected.Example),
             _ => "Error: unexpected result.",
         };
@@ -160,6 +168,25 @@ public sealed class McpWriteTools
         return text.ToString().TrimEnd();
     }
 
+    /// <summary>What a dry run reports: the verdict and the warnings, but no id.</summary>
+    private static string Preview(NoteWriteResult.Accepted accepted)
+    {
+        var text = new StringBuilder("Dry run - nothing was written. This note would be accepted.");
+        text.Append(accepted.IsVerifiable
+            ? " Its evidence anchors to a line, so memory_verify could re-check it."
+            : " Its evidence is a command or measurement rather than a file citation, so memory_verify " +
+              "could not re-check it automatically.");
+        return Warn(text, accepted).ToString();
+    }
+
+    /// <summary>Appends anything the author should act on before moving away from this note.</summary>
+    private static StringBuilder Warn(StringBuilder text, NoteWriteResult.Accepted accepted)
+    {
+        foreach (var warning in accepted.Warnings)
+            text.Append($"\n  ! {warning}");
+        return text;
+    }
+
     private static string Accepted(NoteWriteResult.Accepted accepted, SqliteConnection db)
     {
         var text = new StringBuilder($"Recorded note {accepted.Id}.");
@@ -173,7 +200,7 @@ public sealed class McpWriteTools
         else
             text.Append(" The evidence is a command or measurement rather than a file citation, so nothing " +
                         "anchors it to code and memory_verify cannot re-check it automatically.");
-        return text.ToString();
+        return Warn(text, accepted).ToString();
     }
 
     /// <summary>

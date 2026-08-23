@@ -17,6 +17,9 @@ internal sealed record CommandLine
     public string? Since { get; private init; }
     public bool WithGit { get; private init; }
     public bool Full { get; private init; }
+
+    /// <summary>Skip the indexed-source section: notes only. What the recall hook uses.</summary>
+    public bool NotesOnly { get; private init; }
     public bool Verbose { get; private init; }
     public string? Note { get; private init; }
     public string Query { get; private init; } = "";
@@ -69,6 +72,7 @@ internal sealed record CommandLine
                     options.Tags.AddRange(Next(arg).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
                     break;
                 case "--full": options = options with { Full = true }; break;
+                case "--notes-only": options = options with { NotesOnly = true }; break;
                 case "--with-git": options = options with { WithGit = true }; break;
                 case "-v" or "--verbose": options = options with { Verbose = true }; break;
                 default:

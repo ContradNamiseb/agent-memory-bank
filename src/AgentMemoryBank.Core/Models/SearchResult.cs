@@ -1,6 +1,21 @@
 namespace AgentMemoryBank.Models;
 
 /// <summary>
+/// How a query was matched. Strict ANDs every term, which is what FTS5 does with
+/// space-separated terms; Loosened ORs them.
+///
+/// <para>The distinction is reported to the caller because it changes how much a
+/// result is worth. A strict hit matched everything asked for. A loosened hit is
+/// the store saying "not that, but this is the closest thing I hold" - useful,
+/// and not to be mistaken for a precise answer.</para>
+/// </summary>
+public enum MatchMode
+{
+    Strict,
+    Loosened,
+}
+
+/// <summary>
 /// A matching chunk, ranked by BM25 and carrying everything needed to cite it.
 /// </summary>
 /// <param name="Score">
@@ -46,7 +61,8 @@ public sealed record NoteHit(
 public sealed record SearchResult(
     string Query,
     IReadOnlyList<NoteHit> Notes,
-    IReadOnlyList<ChunkHit> Chunks)
+    IReadOnlyList<ChunkHit> Chunks,
+    MatchMode Mode = MatchMode.Strict)
 {
     public int Total => Notes.Count + Chunks.Count;
 }

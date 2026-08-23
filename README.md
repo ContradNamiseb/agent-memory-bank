@@ -217,6 +217,81 @@ Configuring more than one client is the point rather than a nuisance: they read
 the same database, so a note written from Claude Code is there when Antigravity
 next asks.
 
+### 5. Tell the agent to use it
+
+Registering the server makes the tools *available*. It does not make an agent
+*reach for them*, and an agent that never asks is the same as an empty store.
+
+Paste this at the top of your `CLAUDE.md`, `AGENTS.md`, or whatever instruction
+file your client reads:
+
+```markdown
+## Memory bank first
+
+Before investigating anything whose answer was *decided* or *measured* rather
+than stated in the code -- config values, tuning constants, build flags, known
+hazards, "why is it set this way" -- query the `agent-memory-bank` MCP server
+first.
+
+1. `memory_search` with **short keyword queries**: `wdl_spread`, not
+   `what wdl spread should I use for conversion`. Terms are ANDed, so every
+   extra word narrows the result.
+2. If it returns results, use them -- but verify anything they name still
+   exists in the code before acting. Notes reflect what was true when written.
+3. If it returns nothing, say so, then investigate normally.
+4. When you establish something durable that the code does not state -- why a
+   value is what it is, what a default silently does, what an earlier attempt
+   got wrong -- record it with `memory_note_add` before you finish. Pass
+   `dry_run=true` first if you are unsure the evidence will be accepted.
+
+`memory_stats` confirms the index is populated. An empty result from a
+populated store is a real "not recorded", not a broken connection.
+```
+
+### 6. Or skip the asking entirely (Claude Code)
+
+An instruction competes with everything else in the prompt. Two hooks in
+`hooks/` make recall happen whether or not the agent thinks to ask:
+
+| hook | event | what it does |
+|---|---|---|
+| `memory-session-start.ps1` | `SessionStart` | Injects the most recent handoff, so a new session opens knowing where the last one stopped. |
+| `memory-recall.ps1` | `UserPromptSubmit` | Pulls identifiers out of the prompt, searches, and injects any matching notes. |
+
+Add them to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "powershell",
+                    "args": ["-NoProfile", "-File",
+                             "C:/path/to/agent-memory-bank/hooks/memory-session-start.ps1"] }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "powershell",
+                    "args": ["-NoProfile", "-File",
+                             "C:/path/to/agent-memory-bank/hooks/memory-recall.ps1"] }] }
+    ]
+  }
+}
+```
+
+Both resolve the executable from `$env:AGENT_MEMORY_BANK_EXE`, falling back to
+`../publish/agent-memory-bank.exe` relative to the script. Both exit silently on
+any failure: a hook that breaks session start is worse than no hook.
+
+Two deliberate choices in `memory-recall.ps1` are worth knowing, because both
+were wrong in the first draft and testing caught them:
+
+- **It searches identifiers, not words.** Given `is policy_eval_temp still
+  correct`, it searches `policy_eval_temp` alone. Terms are ANDed, so handing
+  the search a sentence's worth of ordinary English guarantees a miss.
+- **It injects strict matches only.** When you *ask*, a loosened any-term hit
+  is useful -- the store offering the nearest thing it holds. Nobody asked
+  here, so a loose hit is just a note sharing a common word with the prompt,
+  and injecting it would spend tokens on noise every turn.
+
 ## The MCP tool surface
 
 Nine tools, across search, durable notes, verification, and cross-agent

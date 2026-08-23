@@ -19,3 +19,6 @@ memory-bank.local.json
 # Planning and agent-instruction documents: local only, they name real projects.
 PLAN.md
 CLAUDE.md
+
+# Staging copy: publish/ is locked while an MCP server is running.
+publish.next/

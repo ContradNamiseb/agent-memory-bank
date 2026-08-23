@@ -64,7 +64,7 @@ internal static class Program
                      Phase B: mine substantive commit messages for historical rationale,
                      architectural decisions, and hazard fixes.
 
-              search QUERY [--repo NAME] [--kind K] [--limit N] [--full] [--db PATH]
+              search QUERY [--repo NAME] [--kind K] [--limit N] [--full] [--notes-only] [--db PATH]
                      BM25 over notes and chunks. --full prints whole chunk bodies with
                      line numbers instead of a snippet.
 
@@ -219,7 +219,11 @@ internal static class Program
 
         using var db = MemoryDatabase.Open(options.Db);
         var result = MemorySearch.Search(db, options.Query,
-            repo: options.Repo, kind: options.Kind, limit: options.Limit);
+            repo: options.Repo, kind: options.Kind, limit: options.Limit,
+            notesOnly: options.NotesOnly);
+
+        if (result.Mode == MatchMode.Loosened)
+            Console.WriteLine("(no exact match; showing loosened any-term results)\n");
 
         if (result.Notes.Count > 0)
         {

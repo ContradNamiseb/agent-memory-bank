@@ -52,8 +52,34 @@ public class ToolResponseTests
 
         var text = ToolResponses.RenderSearch(MemorySearch.Search(db, "nonexistent_symbol"), db);
 
-        Assert.Contains("genuinely matched nothing", text);
+        Assert.Contains("nothing on this subject is recorded", text);
+        Assert.Contains("Searched as a single term", text);
         Assert.DoesNotContain("store is empty", text, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void A_multi_term_miss_says_both_passes_were_tried()
+    {
+        using var repo = new TempRepo();
+        using var db = IndexedStore(repo);
+
+        var text = ToolResponses.RenderSearch(MemorySearch.Search(db, "nonexistent_symbol absent_thing"), db);
+
+        Assert.Contains("Both an all-terms and an any-term pass were tried", text);
+    }
+
+    [Fact]
+    public void Loosened_results_are_labelled_as_such()
+    {
+        using var repo = new TempRepo();
+        using var db = IndexedStore(repo);
+
+        // One term that exists in the store, one that does not: the AND pass finds
+        // nothing, so the OR retry is what produces these hits.
+        var result = MemorySearch.Search(db, "retry_backoff nonexistent_symbol");
+
+        Assert.Equal(MatchMode.Loosened, result.Mode);
+        Assert.Contains("loosened", ToolResponses.RenderSearch(result, db), StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
