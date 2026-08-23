@@ -31,15 +31,18 @@ $words = [regex]::Matches($prompt.ToLowerInvariant(), '[a-z_][a-z0-9_.-]{3,}') |
          Where-Object { $stop -notcontains $_ } |
          Select-Object -Unique
 
-# Prefer identifier-shaped tokens, and take few of them.
+# Require an identifier-shaped token; do not fall back to ordinary words.
 #
-# Every term is ANDed, so handing the search a prompt's worth of ordinary
-# English guarantees a miss: 'policy_eval_temp still correct lookahead' requires
-# the store to contain all four. One identifier is worth more than the rest put
-# together, so when the prompt contains any, search only those.
-$ids = $words | Where-Object { $_ -match '[_.]' -or $_ -match '[0-9]' }
-if ($ids.Count -gt 0) { $keys = @($ids | Select-Object -First 3) }
-else { $keys = @($words | Sort-Object { $_.Length } -Descending | Select-Object -First 2) }
+# A generic-word search against a note's full rationale text is a false-positive
+# generator: a note about a DirectML checkpoint bug matched a completely
+# unrelated prompt because its 80-line rationale happened to contain both
+# "correct" and "server" in separate sentences (score -2.06, against -10 to -14
+# for a real hit -- weak, but FTS5 doesn't know that in advance). An identifier
+# like wdl_spread or policy_eval_temp does not have that problem: it is rare
+# enough, and specific enough, that a match means something. This is also the
+# form the store's own instructions ask a deliberate search to use, so a prompt
+# with no identifier in it is a prompt this hook has no business guessing about.
+$keys = @($words | Where-Object { $_ -match '[_.]' -or $_ -match '[0-9]' } | Select-Object -First 3)
 if ($keys.Count -lt 1) { exit 0 }
 
 $out = & $exe search ($keys -join ' ') --notes-only --limit 3 2>$null
