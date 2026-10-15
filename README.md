@@ -73,7 +73,12 @@ dotnet publish src/AgentMemoryBank.McpServer -c Release -o publish
 ```
 
 That produces `publish/agent-memory-bank.exe` on Windows and
-`publish/agent-memory-bank` on Linux and macOS. It is not on your PATH, so every
+`publish/agent-memory-bank` on Linux and macOS. To re-publish on Windows while
+agent sessions are running it, use `pwsh -File publish.ps1` instead: it
+publishes into `releases/<timestamp>/` and points a `publish` junction at it, so
+running servers keep going, new launches get the new build, and nothing has to
+be killed. Never `taskkill /IM` the server: some clients (OpenCode) do not
+respawn a dead MCP server. It is not on your PATH, so every
 command below is written against the full path to it — substitute your own.
 
 Publish on the machine you will run it from. The launcher is native to whatever

@@ -2,6 +2,10 @@
 [Bb]in/
 [Oo]bj/
 [Pp]ublish/
+# publish.ps1 turns publish into a junction (git may not see it as a
+# directory) into versioned releases.
+/publish
+releases/
 *.user
 
 # The index itself is a build product: rebuild it with `memory-bank index`.
