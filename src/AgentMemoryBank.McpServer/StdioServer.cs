@@ -33,7 +33,8 @@ internal static class StdioServer
             .WithStdioServerTransport()
             .WithTools<McpTools>()
             .WithTools<McpWriteTools>()
-            .WithTools<McpHandoffTools>();
+            .WithTools<McpHandoffTools>()
+            .WithArgumentGuard();
 
         using var host = builder.Build();
         await host.RunAsync(cancellationToken);

@@ -23,6 +23,24 @@ public sealed record NoteDraft
     public long? RunId { get; init; }
 }
 
+/// <summary>What <see cref="NoteStore.Upsert"/> did with one note.</summary>
+public enum UpsertAction
+{
+    /// <summary>The claim was new and was recorded.</summary>
+    Added,
+    /// <summary>An existing note was kept and marked superseded by the new one.</summary>
+    Superseded,
+    /// <summary>The same claim with the same evidence, kind and confidence was already live.</summary>
+    Unchanged,
+    /// <summary>Refused; <see cref="UpsertOutcome.Write"/> carries the reason.</summary>
+    Rejected,
+}
+
+/// <param name="Id">The live note's id afterwards; 0 on a dry run or a rejection.</param>
+/// <param name="Replaced">The note a supersede retired.</param>
+/// <param name="Write">The underlying accepted/rejected result, when a write was attempted.</param>
+public sealed record UpsertOutcome(UpsertAction Action, long Id, long? Replaced, NoteWriteResult? Write);
+
 /// <summary>
 /// The write path. Notes are the product; this is the gate that keeps them worth
 /// having.
@@ -45,7 +63,16 @@ public static class NoteStore
     /// Record a note, or refuse it with a reason and a worked example.
     /// </summary>
     public static NoteWriteResult Add(SqliteConnection db, NoteDraft draft, string? repoRoot = null,
-        bool dryRun = false)
+        bool dryRun = false) => Add(db, draft, repoRoot, dryRun, replacing: null);
+
+    /// <summary>
+    /// As above. <paramref name="replacing"/> is the note a supersede is about
+    /// to retire: it is still live while its replacement is checked, so it must
+    /// not count as a duplicate of the replacement — restating the same claim
+    /// with better evidence is exactly what superseding is for.
+    /// </summary>
+    private static NoteWriteResult Add(SqliteConnection db, NoteDraft draft, string? repoRoot,
+        bool dryRun, long? replacing)
     {
         var claim = draft.Claim?.Trim() ?? "";
         var evidence = draft.Evidence?.Trim() ?? "";
@@ -58,7 +85,7 @@ public static class NoteStore
             return Reject(RejectionReason.MissingEvidence,
                 "evidence must cite a valid 'repo/path:line' or give a reproducible command or measurement");
 
-        if (FindDuplicate(db, claim) is { } duplicateId)
+        if (FindDuplicate(db, claim) is { } duplicateId && duplicateId != replacing)
             return Reject(RejectionReason.DuplicateClaim,
                 $"note {duplicateId} already claims this; supersede it instead of adding a second copy");
 
@@ -106,9 +133,9 @@ public static class NoteStore
         if (anchorText is null)
             warnings.Add("evidence carries no resolvable 'repo/path:line', so memory_verify cannot " +
                          "re-check this note automatically; add one if the claim is about code");
-        if (FindSimilar(db, claim) is { } near)
+        if (FindSimilar(db, claim) is { } near && near.Id != replacing)
             warnings.Add($"note {near.Id} says something close: \"{near.Claim}\". If this replaces " +
-                         "it, use memory_note_supersede instead of adding a second copy.");
+                         "it, supersede it (memory_notes_upsert supersedes=[id]) instead of adding a second copy.");
 
         if (dryRun)
             return new NoteWriteResult.Accepted(0, citedChunks, anchorText is not null)
@@ -165,22 +192,128 @@ public static class NoteStore
             .FirstOrDefault();
 
         if (original.Claim is null)
-            return Reject(RejectionReason.UnresolvableAnchor, $"there is no note with id {id}");
+            return Reject(RejectionReason.UnresolvableAnchor, $"there is no note with id {id}; {IdHint(db, id)}");
         if (original.Superseded is not null)
             return Reject(RejectionReason.DuplicateClaim,
-                $"note {id} was already superseded by note {original.Superseded}; supersede that one instead");
+                $"note {id} was already superseded by note {original.Superseded}; the live note in that chain " +
+                $"is {LiveHead(db, id)} — supersede that one instead");
 
         var rationale = string.IsNullOrWhiteSpace(why)
             ? replacement.Rationale
             : $"Supersedes note {id} ({original.Claim}). {why}".Trim();
 
-        var written = Add(db, replacement with { Rationale = rationale }, repoRoot);
+        var written = Add(db, replacement with { Rationale = rationale }, repoRoot, dryRun: false, replacing: id);
         if (written is not NoteWriteResult.Accepted accepted) return written;
 
         using var mark = db.Prepare("UPDATE note SET superseded_by = $new WHERE id = $old", "$new", "$old");
         mark.SetAll(accepted.Id, id).ExecuteNonQuery();
         AddEdge(db, null, "note", accepted.Id, "note", id, "supersedes");
         return accepted;
+    }
+
+    /// <summary>
+    /// Write a note whether or not its claim is already recorded — the
+    /// "upsert" a batch writer wants — without ever overwriting one.
+    ///
+    /// <para>The conflict key is the claim (case and surrounding whitespace
+    /// ignored), the same key <see cref="FindDuplicate"/> already enforces.
+    /// On a conflict the update is a supersede: the old note is kept and
+    /// marked, the new one carries the change. An in-place UPDATE would erase
+    /// the record of what was believed before, which is the one thing this
+    /// store refuses to do. Restating a claim with the same evidence, kind and
+    /// confidence changes nothing and is reported as unchanged (its tags are
+    /// merged), so a retried batch is idempotent.</para>
+    ///
+    /// <para><paramref name="supersedes"/> &gt; 0 names the note to replace
+    /// explicitly, for a claim that was reworded rather than restated.</para>
+    /// </summary>
+    public static UpsertOutcome Upsert(SqliteConnection db, NoteDraft draft, long supersedes = 0,
+        bool dryRun = false, string? repoRoot = null)
+    {
+        var target = supersedes > 0 ? supersedes : FindDuplicate(db, draft.Claim?.Trim() ?? "");
+        if (target is not { } existingId)
+        {
+            var added = Add(db, draft, repoRoot, dryRun, replacing: null);
+            return added is NoteWriteResult.Accepted a
+                ? new UpsertOutcome(UpsertAction.Added, a.Id, null, added)
+                : new UpsertOutcome(UpsertAction.Rejected, 0, null, added);
+        }
+
+        using var load = db.Prepare(
+            "SELECT evidence, kind, confidence, superseded_by FROM note WHERE id = $id", "$id");
+        var existing = load.SetAll(existingId).Query(r => (
+                Evidence: r.GetStringOrNull("evidence") ?? "",
+                Kind: r.GetStringOrNull("kind") ?? "",
+                Confidence: r.GetStringOrNull("confidence") ?? "",
+                Superseded: r.IsDBNull(r.GetOrdinal("superseded_by")) ? (long?)null : r.GetInt64("superseded_by")))
+            .FirstOrDefault();
+
+        if (existing.Evidence is null)
+            return new UpsertOutcome(UpsertAction.Rejected, 0, null,
+                Reject(RejectionReason.UnresolvableAnchor, $"there is no note with id {existingId}; {IdHint(db, existingId)}"));
+        if (existing.Superseded is not null)
+            return new UpsertOutcome(UpsertAction.Rejected, 0, null,
+                Reject(RejectionReason.DuplicateClaim,
+                    $"note {existingId} was already superseded; the live note in that chain is " +
+                    $"{LiveHead(db, existingId)} — supersede that one instead"));
+
+        var unchanged = supersedes <= 0
+            && existing.Evidence.Trim() == (draft.Evidence?.Trim() ?? "")
+            && existing.Kind == draft.Kind.ToString().ToLowerInvariant()
+            && existing.Confidence == draft.Confidence.ToString().ToLowerInvariant();
+        if (unchanged)
+        {
+            if (!dryRun) AddTags(db, null, existingId, draft.Tags);
+            return new UpsertOutcome(UpsertAction.Unchanged, existingId, null, null);
+        }
+
+        if (dryRun)
+        {
+            var preview = Add(db, draft, repoRoot, dryRun: true, replacing: existingId);
+            return preview is NoteWriteResult.Accepted
+                ? new UpsertOutcome(UpsertAction.Superseded, 0, existingId, preview)
+                : new UpsertOutcome(UpsertAction.Rejected, 0, null, preview);
+        }
+
+        var why = draft.Rationale ?? (supersedes > 0 ? null : "Restated with different evidence, kind or confidence.");
+        var written = Supersede(db, existingId, draft, why, repoRoot);
+        return written is NoteWriteResult.Accepted s
+            ? new UpsertOutcome(UpsertAction.Superseded, s.Id, existingId, written)
+            : new UpsertOutcome(UpsertAction.Rejected, 0, null, written);
+    }
+
+    /// <summary>The live end of a supersede chain, as "note N", or a statement that the chain is broken.</summary>
+    public static string LiveHead(SqliteConnection db, long id)
+    {
+        using var next = db.Prepare("SELECT superseded_by FROM note WHERE id = $id", "$id");
+        var current = id;
+        for (var hop = 0; hop < 100; hop++)
+        {
+            var successor = next.SetAll(current)
+                .Query(r => r.IsDBNull(0) ? (long?)null : r.GetInt64(0))
+                .FirstOrDefault();
+            if (successor is null) return $"note {current}";
+            current = successor.Value;
+        }
+        return $"note {current} (chain longer than 100 hops)";
+    }
+
+    /// <summary>"note ids run #1–#2700; nearest live: #2698 #2701" — what an unknown id was probably meant to be.</summary>
+    public static string IdHint(SqliteConnection db, long id)
+    {
+        var (lo, hi) = db.Prepare("SELECT COALESCE(MIN(id), 0) AS lo, COALESCE(MAX(id), 0) AS hi FROM note")
+            .Query(r => (r.GetInt64("lo"), r.GetInt64("hi"))).Single();
+        if (hi == 0) return "the store has no notes yet";
+        var near = db.Prepare("""
+            SELECT id FROM (
+              SELECT id FROM note WHERE superseded_by IS NULL AND id < $id ORDER BY id DESC LIMIT 2)
+            UNION ALL
+            SELECT id FROM (
+              SELECT id FROM note WHERE superseded_by IS NULL AND id > $id ORDER BY id LIMIT 2)
+            """, "$id")
+            .SetAll(id).Query(r => r.GetInt64("id"));
+        return $"note ids run #{lo}–#{hi}" +
+               (near.Count > 0 ? $"; nearest live: {string.Join(' ', near.Order().Select(n => $"#{n}"))}" : "");
     }
 
     /// <summary>Notes whose evidence points into a given file, for a staleness sweep.</summary>

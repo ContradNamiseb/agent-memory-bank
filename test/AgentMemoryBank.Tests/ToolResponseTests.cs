@@ -117,8 +117,10 @@ public class ToolResponseTests
         using var repo = new TempRepo();
         using var db = IndexedStore(repo);
 
-        Assert.Contains("No chunk with id 999999", ToolResponses.RenderChunkById(db, 999_999));
-        Assert.Contains("No note with id 999999", ToolResponses.RenderNoteById(db, 999_999));
+        // Plain, and with the valid range, so the caller can correct the id
+        // without a separate listing call.
+        Assert.Contains("no chunk with id 999999; chunk ids run #1–#", ToolResponses.RenderChunkById(db, 999_999));
+        Assert.Contains("no note with id 999999", ToolResponses.RenderNoteById(db, 999_999));
     }
 
     [Fact]

@@ -1,7 +1,5 @@
 using System.ComponentModel;
 using System.Text;
-using System.Text.Json;
-using System.Text.Encodings.Web;
 using Microsoft.Data.Sqlite;
 using ModelContextProtocol.Server;
 using AgentMemoryBank;
@@ -15,9 +13,10 @@ namespace AgentMemoryBank.McpServer;
 /// The write surface: recording durable claims, correcting them, and re-checking
 /// that the code they cite still says what they say.
 ///
-/// <para>Nothing here deletes. A claim that turned out wrong is superseded, so
-/// the record of having believed it survives — often the more useful fact,
-/// because it stops the same wrong conclusion being reached twice.</para>
+/// <para>Nothing here deletes or overwrites. A claim that turned out wrong is
+/// superseded, so the record of having believed it survives — often the more
+/// useful fact, because it stops the same wrong conclusion being reached
+/// twice. That holds for the batch upsert too: its "update" is a supersede.</para>
 /// </summary>
 [McpServerToolType]
 public sealed class McpWriteTools
@@ -26,126 +25,119 @@ public sealed class McpWriteTools
 
     private static SqliteConnection Open() => MemoryDatabase.Open(Config.DbPath);
 
-    [McpServerTool(Name = "memory_note_add")]
+    [McpServerTool(Name = "memory_notes_upsert")]
     [Description("""
-        Record a durable finding so the next session does not have to re-derive it: a decision and
-        what it was made instead of, a hazard, a measured constant, or a procedure worth keeping.
-
-        Write a note when you establish something that is NOT recoverable by reading the code —
-        why a value is what it is, what a default silently does, what an earlier attempt got wrong.
-        Do not write notes restating what the code plainly says.
-
-        Evidence is mandatory and is enforced: give a 'repo/path:line' citation, a commit SHA, or
-        a command or measurement someone could re-run. A claim with nothing behind it is
-        indistinguishable from a guess once the session ends, so it is refused. Refusals come back
-        with a reason code and a worked example to copy — read it rather than retrying the same call.
-
-        Prefer a 'repo/path:line' citation where the claim is about code: only that can be
-        re-checked later by memory_verify. Pass dry_run=true to see whether the evidence will be
-        accepted, and whether a note already says something similar, before spending the write.
+        The one write tool for notes (replaces memory_note_add and
+        memory_note_supersede). Record a durable finding the code does not
+        state: a decision and its alternative, a hazard, a measured constant, a
+        procedure. Evidence is mandatory: a repo/path:line citation (re-
+        checkable by memory_verify), a commit SHA, or a re-runnable command or
+        measurement. Parallel arrays, one entry per note: claims[i] with
+        evidence[i]; kinds, confidences, rationales and tags may hold one value
+        for all. A claim already live (same text, case-insensitive) is
+        UNCHANGED when evidence, kind and confidence match (tags merged),
+        otherwise the old note is superseded, never overwritten. To correct a
+        reworded claim, set supersedes[i] to the old id and say why in
+        rationales[i]. One refusal does not stop the others. Returns one line
+        per note: 'i: added|superseded|unchanged|rejected …'. dry_run writes
+        nothing.
         """)]
-    public static string Add(
-        [Description("One sentence, falsifiable. State what is true, not what you wondered.")]
-        string claim,
-        [Description("repo/path:line citations, and/or a command or measurement that establishes it.")]
-        string evidence,
-        [Description("Why it is true and how it was established. Optional but strongly wanted.")]
-        string? rationale = null,
-        [Description("decision, hazard, howto, or finding. Defaults to finding.")]
-        string kind = "finding",
-        [Description("measured, inferred, or assumed. Be honest: this is how a reader weighs it.")]
-        string confidence = "inferred",
-        [Description("Comma-separated tags for grouping, e.g. 'calibration,loader'.")]
-        string? tags = null,
-        [Description("Validate and report what would happen without writing anything. Use this "
-                     + "first when unsure whether the evidence will be accepted, or whether "
-                     + "something close is already recorded.")]
+    public static string Upsert(
+        [Description("One falsifiable sentence per note.")]
+        string[] claims,
+        [Description("Evidence per note, same order as claims.")]
+        string[] evidence,
+        [Description("Kind per note, or one for all. Default finding.")]
+        NoteKind[]? kinds = null,
+        [Description("Confidence per note, or one for all. Default inferred.")]
+        Confidence[]? confidences = null,
+        [Description("Rationale per note, or one for all.")]
+        string[]? rationales = null,
+        [Description("Comma-separated tags per note, or one string for all.")]
+        string[]? tags = null,
+        [Description("Note id each claim replaces; 0 = match by claim text.")]
+        long[]? supersedes = null,
+        [Description("Validate only; write nothing.")]
         bool dry_run = false)
     {
-        if (!Enum.TryParse<NoteKind>(kind, ignoreCase: true, out var noteKind))
-            return Envelope("rejected", "invalid_kind",
-                $"kind must be one of: {Names<NoteKind>()}", NoteExample.Default);
-        if (!Enum.TryParse<Confidence>(confidence, ignoreCase: true, out var noteConfidence))
-            return Envelope("rejected", "invalid_confidence",
-                $"confidence must be one of: {Names<Confidence>()}", NoteExample.Default);
+        var count = claims?.Length ?? 0;
+        if (count == 0) return "Error: claims is empty.";
+        var problems = new List<string>();
+        void Check(string name, int length)
+        {
+            if (length is not 0 and not 1 && length != count)
+                problems.Add($"{name} has {length} values; give 1 (applies to all) or {count} (one per claim)");
+        }
+        if (evidence is null || evidence.Length != count)
+            problems.Add($"evidence has {evidence?.Length ?? 0} values; it needs exactly {count}, one per claim");
+        Check("kinds", kinds?.Length ?? 0);
+        Check("confidences", confidences?.Length ?? 0);
+        Check("rationales", rationales?.Length ?? 0);
+        Check("tags", tags?.Length ?? 0);
+        // Never broadcast: one id retires one note, so it cannot apply to every claim.
+        if (supersedes is { Length: > 0 } && supersedes.Length != count)
+            problems.Add($"supersedes has {supersedes.Length} values; it needs exactly {count} (0 = match by claim)");
+        if (problems.Count > 0) return $"Error: memory_notes_upsert: {string.Join("; ", problems)}. Nothing was written.";
+
+        static T? At<T>(T[]? values, int i) =>
+            values is null || values.Length == 0 ? default : values[values.Length == 1 ? 0 : i];
 
         using var db = Open();
-        var draft = new NoteDraft
+        var lines = new List<string>();
+        for (var i = 0; i < count; i++)
         {
-            Claim = claim ?? "",
-            Evidence = evidence ?? "",
-            Rationale = rationale,
-            Kind = noteKind,
-            Confidence = noteConfidence,
-            Tags = tags?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [],
-        };
+            var draft = new NoteDraft
+            {
+                Claim = claims![i] ?? "",
+                Evidence = evidence![i] ?? "",
+                Rationale = At(rationales, i),
+                Kind = kinds is { Length: > 0 } ? At(kinds, i) : NoteKind.Finding,
+                Confidence = confidences is { Length: > 0 } ? At(confidences, i) : Confidence.Inferred,
+                Tags = SplitTags(At(tags, i)),
+            };
+            var replace = supersedes is { Length: > 0 } ? supersedes[i] : 0;
 
-        return NoteStore.Add(db, draft, dryRun: dry_run) switch
-        {
-            NoteWriteResult.Accepted accepted => dry_run ? Preview(accepted) : Accepted(accepted, db),
-            NoteWriteResult.Rejected rejected => Envelope("rejected", rejected.Code, rejected.Message, rejected.Example),
-            _ => "Error: unexpected result.",
-        };
-    }
+            var outcome = NoteStore.Upsert(db, draft, replace, dry_run);
+            lines.Add($"{i}: " + outcome.Action switch
+            {
+                UpsertAction.Added => dry_run ? "would add" : $"added note {outcome.Id}",
+                UpsertAction.Unchanged => $"unchanged note {outcome.Id} (same claim and evidence; tags merged)",
+                UpsertAction.Superseded => dry_run
+                    ? $"would supersede note {outcome.Replaced}"
+                    : $"superseded note {outcome.Replaced} with note {outcome.Id}",
+                _ => outcome.Write is NoteWriteResult.Rejected r
+                    ? $"rejected ({r.Code}): {r.Message}"
+                    : "rejected",
+            } + Grounding(outcome.Write) + Warnings(outcome.Write));
+        }
 
-    [McpServerTool(Name = "memory_note_supersede")]
-    [Description("""
-        Replace a note that turned out to be wrong or incomplete with a corrected one. The original
-        is kept and marked superseded, never deleted, so the record of having been wrong survives.
-
-        Use this instead of adding a second note that contradicts the first — two live notes
-        disagreeing is how a store stops being trusted. The replacement needs its own evidence,
-        held to the same standard as any other write.
-        """)]
-    public static string Supersede(
-        [Description("Id of the note being replaced.")] long id,
-        [Description("The corrected claim.")] string claim,
-        [Description("Evidence for the corrected claim.")] string evidence,
-        [Description("Why the earlier note was wrong. This is the part worth keeping.")]
-        string? why = null,
-        [Description("decision, hazard, howto, or finding.")] string kind = "finding",
-        [Description("measured, inferred, or assumed.")] string confidence = "inferred")
-    {
-        if (!Enum.TryParse<NoteKind>(kind, ignoreCase: true, out var noteKind))
-            return Envelope("rejected", "invalid_kind", $"kind must be one of: {Names<NoteKind>()}", NoteExample.Default);
-        if (!Enum.TryParse<Confidence>(confidence, ignoreCase: true, out var noteConfidence))
-            return Envelope("rejected", "invalid_confidence", $"confidence must be one of: {Names<Confidence>()}", NoteExample.Default);
-
-        using var db = Open();
-        var replacement = new NoteDraft
-        {
-            Claim = claim ?? "",
-            Evidence = evidence ?? "",
-            Kind = noteKind,
-            Confidence = noteConfidence,
-        };
-
-        return NoteStore.Supersede(db, id, replacement, why) switch
-        {
-            NoteWriteResult.Accepted accepted =>
-                $"Recorded note {accepted.Id}, superseding note {id}. The original is kept and " +
-                "will no longer appear in searches unless asked for.",
-            NoteWriteResult.Rejected rejected => Envelope("rejected", rejected.Code, rejected.Message, rejected.Example),
-            _ => "Error: unexpected result.",
-        };
+        var head = dry_run ? "Dry run - nothing was written.\n" : "";
+        var rejected = lines.Count(l => l.Contains(": rejected", StringComparison.Ordinal));
+        var tail = rejected > 0
+            ? $"\n{rejected} rejected; fix those items and resend only them. Example of an accepted note: " +
+              $"claim=\"{NoteExample.Default.Claim}\" evidence=\"{NoteExample.Default.Evidence}\""
+            : "";
+        return head + string.Join('\n', lines) + tail;
     }
 
     [McpServerTool(Name = "memory_verify")]
     [Description("""
-        Re-check that the code a note cites still says what the note says. Run this after pulling
-        changes, or before relying on an old finding.
-
-        Notes whose cited line merely moved are re-anchored silently and reported as fine. Only two
-        outcomes need a human: 'moved', where the line is gone but its enclosing function survives,
-        and 'broken', where neither does and the note may now be false.
+        Re-check that the code a note cites still says what it says; run after
+        pulling changes or before relying on an old note. Writes only
+        re-anchoring of notes whose cited line merely moved. Returns counts and
+        one line per note needing a human: MOVED (line gone, function survives)
+        or BROKEN (both gone; the note may now be false).
         """)]
     public static string Verify(
-        [Description("Verify one note by id. Omit to check every note that is still current.")]
+        [Description("One note id. Omit to check every current note.")]
         long? id = null)
     {
         using var db = Open();
         var results = EvidenceVerifier.Verify(db, id);
-        if (results.Count == 0) return id is null ? "There are no notes to verify." : $"No note with id {id}.";
+        if (results.Count == 0)
+            return id is null
+                ? "There are no notes to verify."
+                : $"Error: no note with id {id}; {NoteStore.IdHint(db, id.Value)}.";
 
         var text = new StringBuilder();
         var attention = results.Where(r => r.NeedsAttention).ToList();
@@ -162,72 +154,26 @@ public sealed class McpWriteTools
             foreach (var result in attention)
                 text.AppendLine($"- [note {result.NoteId}] {result.Status.ToString().ToUpperInvariant()}: {result.Detail}");
             text.AppendLine();
-            text.AppendLine("Read each with memory_get, then correct it with memory_note_supersede " +
+            text.AppendLine("Read each with memory_get, then correct it with memory_notes_upsert (supersedes=[id]) " +
                             "if the finding no longer holds.");
         }
         return text.ToString().TrimEnd();
     }
 
-    /// <summary>What a dry run reports: the verdict and the warnings, but no id.</summary>
-    private static string Preview(NoteWriteResult.Accepted accepted)
-    {
-        var text = new StringBuilder("Dry run - nothing was written. This note would be accepted.");
-        text.Append(accepted.IsVerifiable
-            ? " Its evidence anchors to a line, so memory_verify could re-check it."
-            : " Its evidence is a command or measurement rather than a file citation, so memory_verify " +
-              "could not re-check it automatically.");
-        return Warn(text, accepted).ToString();
-    }
+    private static IReadOnlyList<string> SplitTags(string? tags) =>
+        tags?.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
 
-    /// <summary>Appends anything the author should act on before moving away from this note.</summary>
-    private static StringBuilder Warn(StringBuilder text, NoteWriteResult.Accepted accepted)
+    /// <summary>Whether the citation resolved into the index; the unresolvable case is already a warning.</summary>
+    private static string Grounding(NoteWriteResult? write) => write switch
     {
-        foreach (var warning in accepted.Warnings)
-            text.Append($"\n  ! {warning}");
-        return text;
-    }
-
-    private static string Accepted(NoteWriteResult.Accepted accepted, SqliteConnection db)
-    {
-        var text = new StringBuilder($"Recorded note {accepted.Id}.");
-        if (accepted.IsGrounded)
-            text.Append($" Linked to {accepted.CitedChunkIds.Count} indexed location(s); the citation " +
-                        "resolves and memory_verify can re-check it.");
-        else if (accepted.IsVerifiable)
-            text.Append(" The cited file exists but is not indexed (a vendored tree, or a skipped path), " +
-                        "so there is no link into the index — but the line was anchored and memory_verify " +
-                        "can still re-check it.");
-        else
-            text.Append(" The evidence is a command or measurement rather than a file citation, so nothing " +
-                        "anchors it to code and memory_verify cannot re-check it automatically.");
-        return Warn(text, accepted).ToString();
-    }
-
-    /// <summary>
-    /// A machine-readable refusal. An opaque rejection is how an autonomous caller
-    /// gets stuck retrying the same malformed write; the worked example gives it
-    /// something to copy rather than a constraint to guess at.
-    /// </summary>
-    private static string Envelope(string status, string reason, string message, NoteExample example) =>
-        JsonSerializer.Serialize(new
-        {
-            status,
-            reason,
-            message,
-            example = new { claim = example.Claim, evidence = example.Evidence, confidence = example.Confidence },
-        }, RejectionJson);
-
-    /// <summary>
-    /// Relaxed escaping: the default encoder turns an apostrophe into ',
-    /// and this envelope is read by a model that has to act on the message.
-    /// The output is plain text, never HTML, so the strict escaping buys nothing.
-    /// </summary>
-    private static readonly JsonSerializerOptions RejectionJson = new()
-    {
-        WriteIndented = true,
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+        NoteWriteResult.Accepted { IsGrounded: true } a => $" (linked to {a.CitedChunkIds.Count} indexed location(s))",
+        NoteWriteResult.Accepted { IsVerifiable: true } => " (anchored; cited file not indexed)",
+        _ => "",
     };
 
-    private static string Names<T>() where T : struct, Enum =>
-        string.Join(", ", Enum.GetNames<T>().Select(n => n.ToLowerInvariant()));
+    private static string Warnings(NoteWriteResult? write) =>
+        write is NoteWriteResult.Accepted { Warnings.Count: > 0 } a
+            ? string.Concat(a.Warnings.Select(w => $"\n   ! {w}"))
+            : "";
+
 }

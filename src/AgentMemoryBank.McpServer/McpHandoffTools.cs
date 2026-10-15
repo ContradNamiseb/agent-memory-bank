@@ -1,6 +1,5 @@
 using System.ComponentModel;
-using System.Text.Encodings.Web;
-using System.Text.Json;
+using System.Text;
 using Microsoft.Data.Sqlite;
 using ModelContextProtocol.Server;
 using AgentMemoryBank.Database;
@@ -10,6 +9,10 @@ namespace AgentMemoryBank.McpServer;
 
 /// <summary>
 /// MCP tool surface for cross-agent session continuity and context handoffs.
+///
+/// <para>Results are labelled text, not indented JSON: the reader is a model,
+/// and in a handoff the property names and indentation were a large share of
+/// the bytes it paid for.</para>
 /// </summary>
 [McpServerToolType]
 public sealed class McpHandoffTools
@@ -20,24 +23,24 @@ public sealed class McpHandoffTools
 
     [McpServerTool(Name = "memory_handoff_save")]
     [Description("""
-        Save a session handoff / context snapshot to the memory bank.
-        Use this before ending a session or when hitting a rate limit so the next agent
-        (Claude Code, Antigravity, VS Code Copilot, Cursor) can seamlessly continue your work without losing context.
+        Save a session handoff so the next agent (any client) resumes without
+        re-deriving context. Writes one snapshot. Call before a usage or
+        context limit, or when told to hand off. Returns the handoff id.
         """)]
     public static string SaveHandoff(
-        [Description("Name of the agent creating the handoff, e.g. 'Antigravity (Gemini)', 'Claude Code', 'VS Code Copilot'.")]
+        [Description("Your agent/client name, e.g. 'Claude Code', 'Codex'.")]
         string agent,
-        [Description("Brief title or topic of the task, e.g. 'DirectML checkpoint recovery fix'.")]
+        [Description("Short title of the task.")]
         string topic,
-        [Description("Clear summary of what was accomplished, what was discovered, and what decisions were made.")]
+        [Description("What was done, found and decided.")]
         string summary,
-        [Description("Explicit list of next immediate action steps for the incoming agent to execute.")]
+        [Description("The exact next actions for the successor.")]
         string next_steps,
-        [Description("Comma-separated list or paths of files currently modified or in progress.")]
+        [Description("Files modified or in progress, comma-separated.")]
         string? active_files = null,
-        [Description("Any open questions, pending decisions, or blockers needing attention.")]
+        [Description("Open questions, pending decisions, blockers.")]
         string? open_questions = null,
-        [Description("Optional JSON or key-value context data.")]
+        [Description("Extra JSON or key-value context.")]
         string? context_data = null)
     {
         if (string.IsNullOrWhiteSpace(agent) || string.IsNullOrWhiteSpace(topic) ||
@@ -47,7 +50,7 @@ public sealed class McpHandoffTools
         }
 
         using var db = Open();
-        var draft = new SessionHandoffDraft
+        var saved = HandoffStore.Save(db, new SessionHandoffDraft
         {
             Agent = agent,
             Topic = topic,
@@ -55,73 +58,76 @@ public sealed class McpHandoffTools
             NextSteps = next_steps,
             ActiveFiles = active_files,
             OpenQuestions = open_questions,
-            ContextData = context_data
-        };
+            ContextData = context_data,
+        });
 
-        var saved = HandoffStore.Save(db, draft);
-
-        return JsonSerializer.Serialize(new
-        {
-            status = "saved",
-            handoff_id = saved.Id,
-            agent = saved.Agent,
-            topic = saved.Topic,
-            created_at = saved.CreatedAt,
-            message = $"Session handoff #{saved.Id} saved. The next agent can resume by calling memory_handoff_latest."
-        }, JsonOptions);
+        return $"saved handoff #{saved.Id} ({saved.Agent}, {saved.CreatedAt}): {saved.Topic}. " +
+               "The next agent resumes with memory_handoff_latest.";
     }
 
-    [McpServerTool(Name = "memory_handoff_latest")]
+    [McpServerTool(Name = "memory_handoff_latest", ReadOnly = true)]
     [Description("""
-        Retrieve the latest session handoff snapshot recorded by any AI agent.
-        Call this at the beginning of a session or when resuming work to understand what the previous
-        agent completed, active files, and the exact next steps.
+        The newest session handoff from any agent: topic, summary, next steps,
+        active files, open questions. Read-only. Call when starting or resuming
+        work. A hook-written handoff is unreviewed; verify what it names.
+        max_chars caps the output.
         """)]
     public static string GetLatestHandoff(
-        [Description("Optional filter by agent name (e.g. 'Claude', 'Antigravity').")]
-        string? agent = null)
+        [Description("Only handoffs whose agent name contains this text.")]
+        string? agent = null,
+        [Description("Max output characters. Default 12000; 0 = no cap.")]
+        int max_chars = 12_000)
     {
         using var db = Open();
-        var latest = HandoffStore.GetLatest(db, agent);
+        var latest = HandoffStore.GetLatest(db, Filter(agent));
+        if (latest is null) return NoMatch(db, agent);
 
-        if (latest is null)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                status = "none",
-                message = "No session handoffs recorded yet."
-            }, JsonOptions);
-        }
-
-        return JsonSerializer.Serialize(new
-        {
-            status = "found",
-            handoff = latest
-        }, JsonOptions);
+        var text = Render(latest);
+        return max_chars > 0 && text.Length > max_chars
+            ? text[..max_chars] + $"\n…[cut at {max_chars} of {text.Length} chars; memory_handoff_latest max_chars=0 for all]"
+            : text;
     }
 
-    [McpServerTool(Name = "memory_handoff_list")]
-    [Description("List past session handoffs across all AI agents.")]
+    [McpServerTool(Name = "memory_handoff_list", ReadOnly = true)]
+    [Description("""
+        Past handoffs newest first, one line each: '#id time agent: topic'.
+        Read-only.
+        """)]
     public static string ListHandoffs(
-        [Description("Maximum number of handoffs to return. Default 5.")]
+        [Description("Max handoffs. Default 5.")]
         int limit = 5,
-        [Description("Optional filter by agent name.")]
+        [Description("Only handoffs whose agent name contains this text.")]
         string? agent = null)
     {
         using var db = Open();
-        var handoffs = HandoffStore.List(db, limit > 0 ? limit : 5, agent);
-
-        return JsonSerializer.Serialize(new
-        {
-            status = "found",
-            count = handoffs.Count,
-            handoffs = handoffs
-        }, JsonOptions);
+        var handoffs = HandoffStore.List(db, limit > 0 ? limit : 5, Filter(agent));
+        if (handoffs.Count == 0) return NoMatch(db, agent);
+        return string.Join('\n', handoffs.Select(h => $"#{h.Id} {Short(h.CreatedAt)} {h.Agent}: {h.Topic}"));
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static string? Filter(string? agent) => string.IsNullOrWhiteSpace(agent) ? null : agent.Trim();
+
+    /// <summary>"None" for an empty store; for a filter that matched nothing, the agent names that would match.</summary>
+    private static string NoMatch(SqliteConnection db, string? agent)
     {
-        WriteIndented = true,
-        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-    };
+        if (Filter(agent) is null) return "No session handoffs recorded yet.";
+        var agents = db.Prepare("SELECT DISTINCT agent FROM session_handoff ORDER BY agent")
+            .Query(r => r.GetString("agent"));
+        return $"No handoff from an agent matching '{agent}'. Agents with handoffs: {string.Join(", ", agents)}.";
+    }
+
+    private static string Render(SessionHandoff h)
+    {
+        var text = new StringBuilder();
+        text.AppendLine($"handoff #{h.Id} · {h.Agent} · {h.CreatedAt}");
+        text.AppendLine($"topic: {h.Topic}");
+        text.AppendLine($"summary:\n{h.Summary}");
+        text.AppendLine($"next steps:\n{h.NextSteps}");
+        if (!string.IsNullOrWhiteSpace(h.ActiveFiles)) text.AppendLine($"active files: {h.ActiveFiles}");
+        if (!string.IsNullOrWhiteSpace(h.OpenQuestions)) text.AppendLine($"open questions:\n{h.OpenQuestions}");
+        if (!string.IsNullOrWhiteSpace(h.ContextData)) text.AppendLine($"context: {h.ContextData}");
+        return text.ToString().TrimEnd();
+    }
+
+    private static string Short(string iso) => iso.Length >= 16 ? iso[..16].Replace('T', ' ') : iso;
 }

@@ -19,7 +19,8 @@ namespace AgentMemoryBank.McpServer;
 public static class ToolResponses
 {
     /// <summary>Search results: notes first, then the chunks that ground them.</summary>
-    public static string RenderSearch(SearchResult result, SqliteConnection db) => Render(result, db);
+    public static string RenderSearch(SearchResult result, SqliteConnection db, int maxChars = 0) =>
+        Render(result, db, maxChars);
 
     /// <summary>One chunk in full, with line numbers so any line can be cited.</summary>
     public static string RenderChunkById(SqliteConnection db, long id) => RenderChunk(db, id);
@@ -40,7 +41,7 @@ public static class ToolResponses
         return text.ToString().TrimEnd();
     }
 
-    private static string Render(SearchResult result, SqliteConnection db)
+    private static string Render(SearchResult result, SqliteConnection db, int maxChars)
     {
         if (result.Total == 0)
         {
@@ -70,20 +71,28 @@ public static class ToolResponses
             text.AppendLine();
         }
 
+        // Blocks are added whole until the budget runs out; what did not fit is
+        // named by id, so the caller fetches exactly those with memory_get.
+        var cut = new List<string>();
+        bool Fits(string block) => maxChars <= 0 || cut.Count == 0 && text.Length + block.Length <= maxChars;
+
         if (result.Notes.Count > 0)
         {
             text.AppendLine($"## Recorded knowledge ({result.Notes.Count})");
             text.AppendLine();
             foreach (var note in result.Notes)
             {
-                text.AppendLine($"### [note {note.Id}] {note.Claim}");
-                text.AppendLine($"- kind: {Lower(note.Kind)} · confidence: {Lower(note.Confidence)}");
-                if (!string.IsNullOrWhiteSpace(note.Rationale)) text.AppendLine($"- why: {note.Rationale}");
-                if (!string.IsNullOrWhiteSpace(note.Evidence)) text.AppendLine($"- evidence: {note.Evidence}");
-                text.AppendLine(note.VerifiedAt is null
+                var block = new StringBuilder();
+                block.AppendLine($"### [note {note.Id}] {note.Claim}");
+                block.AppendLine($"- kind: {Lower(note.Kind)} · confidence: {Lower(note.Confidence)}");
+                if (!string.IsNullOrWhiteSpace(note.Rationale)) block.AppendLine($"- why: {note.Rationale}");
+                if (!string.IsNullOrWhiteSpace(note.Evidence)) block.AppendLine($"- evidence: {note.Evidence}");
+                block.AppendLine(note.VerifiedAt is null
                     ? "- evidence has never been re-verified since it was written"
                     : $"- evidence last verified: {note.VerifiedAt}");
-                text.AppendLine();
+                block.AppendLine();
+                if (Fits(block.ToString())) text.Append(block);
+                else cut.Add($"note {note.Id}");
             }
         }
 
@@ -94,12 +103,17 @@ public static class ToolResponses
             foreach (var hit in result.Chunks)
             {
                 var symbol = hit.Symbol is null ? "" : $" — {hit.Symbol}";
-                text.AppendLine($"### [chunk {hit.Id}] {hit.Citation}-{hit.LineEnd} ({hit.Kind}{symbol})");
-                text.AppendLine(Collapse(hit.Snippet));
-                text.AppendLine();
+                var block = $"### [chunk {hit.Id}] {hit.Citation}-{hit.LineEnd} ({hit.Kind}{symbol})\n" +
+                            $"{Collapse(hit.Snippet)}\n\n";
+                if (Fits(block)) text.Append(block);
+                else cut.Add($"chunk {hit.Id}");
             }
-            text.AppendLine("Call memory_get with kind 'chunk' and an id above for the full text.");
+            text.AppendLine("Call memory_get kind=chunk ids=[…] with ids above for the full text.");
         }
+
+        if (cut.Count > 0)
+            text.AppendLine($"max_chars reached; not shown: {string.Join(", ", cut)}. " +
+                            "Fetch them with memory_get (ids takes a list).");
 
         return text.ToString().TrimEnd();
     }
@@ -107,7 +121,9 @@ public static class ToolResponses
     private static string RenderChunk(SqliteConnection db, long id)
     {
         var found = MemorySearch.GetChunk(db, id);
-        if (found is null) return $"No chunk with id {id}.";
+        if (found is null)
+            return $"Error: no chunk with id {id}; chunk ids run #1–#{db.Scalar<long>("SELECT COALESCE(MAX(id), 0) FROM chunk")}. " +
+                   "Chunk ids come from memory_search results.";
 
         var (chunk, repo, path, gitRev) = found.Value;
         var text = new StringBuilder();
@@ -143,7 +159,7 @@ public static class ToolResponses
             Superseded = r.IsDBNull(r.GetOrdinal("superseded_by")) ? (long?)null : r.GetInt64("superseded_by"),
         }).FirstOrDefault();
 
-        if (note is null) return $"No note with id {id}.";
+        if (note is null) return $"Error: no note with id {id}; {NoteStore.IdHint(db, id)}.";
 
         var text = new StringBuilder();
         text.AppendLine($"[note {id}] {note.Claim}");
@@ -156,6 +172,31 @@ public static class ToolResponses
         text.AppendLine(note.Verified is null
             ? "\nThis note's evidence has never been re-verified; the cited code may have moved."
             : $"\nEvidence last verified: {note.Verified}");
+        return text.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// The manifest as TSV: one header, one line per note, claims cut to a
+    /// line. Column names once instead of property names per row is what makes
+    /// a 200-note index affordable.
+    /// </summary>
+    public static string RenderIndex(IReadOnlyList<IndexEntry> entries, int total, string filters)
+    {
+        if (entries.Count == 0)
+            return $"No notes match{(filters.Length > 0 ? $" {filters}" : "")}.";
+        var text = new StringBuilder();
+        text.AppendLine($"{entries.Count} of {total} note(s){(filters.Length > 0 ? $" {filters}" : "")}, newest first. " +
+                        "Fetch bodies with memory_get kind=note ids=[…].");
+        text.AppendLine("id\tkind\tconf\tchars\ttags\tclaim");
+        foreach (var e in entries)
+        {
+            var claim = Collapse(e.Claim);
+            if (claim.Length > 110) claim = claim[..109] + "…";
+            var superseded = e.SupersededBy is { } by ? $" [superseded by {by}]" : "";
+            text.AppendLine($"{e.Id}\t{e.Kind}\t{e.Confidence}\t{e.Chars}\t{string.Join(',', e.Tags)}\t{claim}{superseded}");
+        }
+        if (entries.Count < total)
+            text.AppendLine($"… {total - entries.Count} older: continue with before_id={entries[^1].Id}.");
         return text.ToString().TrimEnd();
     }
 

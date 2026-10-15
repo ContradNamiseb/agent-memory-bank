@@ -247,7 +247,7 @@ first.
    shorter phrasing left to try.
 4. When you establish something durable that the code does not state -- why a
    value is what it is, what a default silently does, what an earlier attempt
-   got wrong -- record it with `memory_note_add` before you finish. Pass
+   got wrong -- record it with `memory_notes_upsert` before you finish. Pass
    `dry_run=true` first if you are unsure the evidence will be accepted.
 
 `memory_stats` confirms the index is populated. An empty result from a
@@ -307,15 +307,23 @@ handoffs. Every search result carries a citation, and every write demands one:
 
 | Tool | Category | Purpose |
 | :--- | :--- | :--- |
-| `memory_search(query, repo?, kind?, limit?)` | Search | BM25 over notes and chunks, notes first, every hit cited |
-| `memory_get(kind, id)` | Inspection | One chunk or note in full, with line numbers |
+| `memory_search(query, repo?, kind?, limit?, max_chars?)` | Search | BM25 over notes and chunks, notes first, every hit cited. Output capped (default 12000 chars); ids that did not fit are listed |
+| `memory_index(repo?, kind?, tag?, include_superseded?, limit?, before_id?)` | Orientation | TSV manifest — id, kind, confidence, chars, tags, one-line claim — so an agent picks ids before fetching bodies |
+| `memory_get(kind, ids, max_chars?)` | Inspection | One or several chunks or notes in full, with line numbers |
 | `memory_stats()` | Inspection | What the store holds, and row counts per repo |
-| `memory_note_add(claim, evidence, ...)` | Write | Record a durable finding. Evidence is required and checked |
-| `memory_note_supersede(id, claim, evidence, why)` | Write | Correct a note without deleting the record of being wrong |
+| `memory_notes_upsert(claims[], evidence[], kinds?[], confidences?[], rationales?[], tags?[], supersedes?[], dry_run?)` | Write | The only note write (replaced `memory_note_add` and `memory_note_supersede`). Evidence is required and checked; a claim already recorded does not fail: same claim + same evidence is *unchanged*, a changed one *supersedes* the old note. Never overwrites |
 | `memory_verify(id?)` | Verification | Re-check that cited code still says what the note says |
 | `memory_handoff_save(agent, topic, summary, next_steps, ...)` | Continuity | Save a session handoff before switching agents or hitting limits |
 | `memory_handoff_latest(agent?)` | Continuity | Retrieve the latest handoff so an incoming agent resumes instantly |
 | `memory_handoff_list(limit?, agent?)` | Continuity | List past session handoffs across all AI tools |
+
+`kind` and `confidence` are enums in the schema. Every call passes through an
+argument guard (`ToolArgumentGuard`, shared verbatim with AgoraMCP) that maps
+the names models reach for (`claim` → `claims`, `message` → `body`,
+`threadId` → `thread_id`), matches enum values ignoring case, and turns
+anything still wrong into an error carrying the tool's signature. Errors on
+unknown ids, repos and tags list the valid ones. Results are labelled text,
+not JSON.
 
 ---
 

@@ -1,27 +1,35 @@
+using System.Text.Json.Serialization;
+
 namespace AgentMemoryBank.Models;
 
+// The JSON names are the lowercase strings the note table stores, so an MCP
+// tool taking one of these enums advertises exactly the values the store
+// accepts and the schema carries them as an "enum" list.
+
 /// <summary>How a claim was established. Ordered from strongest to weakest.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<Confidence>))]
 public enum Confidence
 {
     /// <summary>Backed by a measurement or a fit that can be reproduced.</summary>
-    Measured,
+    [JsonStringEnumMemberName("measured")] Measured,
     /// <summary>Read off code, commits or docs, but not measured.</summary>
-    Inferred,
+    [JsonStringEnumMemberName("inferred")] Inferred,
     /// <summary>Believed, with nothing behind it yet. Treat with suspicion.</summary>
-    Assumed,
+    [JsonStringEnumMemberName("assumed")] Assumed,
 }
 
 /// <summary>What kind of durable knowledge a note carries.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter<NoteKind>))]
 public enum NoteKind
 {
     /// <summary>A choice that was made, and what it was made instead of.</summary>
-    Decision,
+    [JsonStringEnumMemberName("decision")] Decision,
     /// <summary>Something that will bite: a default that destroys data, a silent truncation.</summary>
-    Hazard,
+    [JsonStringEnumMemberName("hazard")] Hazard,
     /// <summary>A procedure worth not re-deriving.</summary>
-    Howto,
+    [JsonStringEnumMemberName("howto")] Howto,
     /// <summary>A measured fact about the system.</summary>
-    Finding,
+    [JsonStringEnumMemberName("finding")] Finding,
 }
 
 /// <summary>

@@ -26,7 +26,7 @@ first.
    shorter phrasing left to try.
 4. When you establish something durable that the code does not state -- why a
    value is what it is, what a default silently does, what an earlier attempt
-   got wrong -- record it with `memory_note_add` before you finish. Pass
+   got wrong -- record it with `memory_notes_upsert` before you finish. Pass
    `dry_run=true` first if you are unsure the evidence will be accepted.
 
 `memory_stats` confirms the index is populated. An empty result from a
