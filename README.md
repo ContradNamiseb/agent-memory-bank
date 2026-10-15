@@ -234,11 +234,17 @@ hazards, "why is it set this way" -- query the `agent-memory-bank` MCP server
 first.
 
 1. `memory_search` with **short keyword queries**: `wdl_spread`, not
-   `what wdl spread should I use for conversion`. Terms are ANDed, so every
-   extra word narrows the result.
+   `what wdl spread should I use for conversion`. Each term is matched as a
+   phrase and the terms are ANDed, so a keyword query is the precise one. A
+   longer query is not thrown away -- when nothing matches every term the
+   search retries with *any* term and labels the result `mode=Loosened` -- but
+   that pass ranks partly by coincidence, so read it as the store offering its
+   nearest thing rather than as an answer.
 2. If it returns results, use them -- but verify anything they name still
    exists in the code before acting. Notes reflect what was true when written.
-3. If it returns nothing, say so, then investigate normally.
+3. If it returns nothing, say so, then investigate normally. Empty means
+   empty: the loosened retry has already run by that point, so there is no
+   shorter phrasing left to try.
 4. When you establish something durable that the code does not state -- why a
    value is what it is, what a default silently does, what an earlier attempt
    got wrong -- record it with `memory_note_add` before you finish. Pass
@@ -285,8 +291,10 @@ Two deliberate choices in `memory-recall.ps1` are worth knowing, because both
 were wrong in the first draft and testing caught them:
 
 - **It searches identifiers, not words.** Given `is policy_eval_temp still
-  correct`, it searches `policy_eval_temp` alone. Terms are ANDed, so handing
-  the search a sentence's worth of ordinary English guarantees a miss.
+  correct`, it searches `policy_eval_temp` alone. Because the hook takes strict
+  matches only (below), the loosened retry that rescues a wordy query in normal
+  use does not apply here -- so handing it a sentence's worth of ordinary
+  English really does guarantee a miss.
 - **It injects strict matches only.** When you *ask*, a loosened any-term hit
   is useful -- the store offering the nearest thing it holds. Nobody asked
   here, so a loose hit is just a note sharing a common word with the prompt,
@@ -422,7 +430,22 @@ test/AgentMemoryBank.Tests/      xUnit
 reference/prototype-js/          the JS spike this was ported from, kept for diffing
 ```
 
-## What stays local
+## Everything stays on your machine
+
+This is the point of the project, not a limitation of the current version.
+
+**The store never leaves the machine it was built on.** There is no sync, no
+export, no server mode, no telemetry, and no call to any remote service. The
+tool is public; the store it builds is not, and there is no code path that
+would move it.
+
+Two reasons, and the second is easier to lose sight of:
+
+- **Privacy.** The index holds verbatim source from private repositories, and
+  the notes hold decisions about that source.
+- **The notes are personal.** A store reflects how one developer works and what
+  they concluded. Merging two of them does not produce a better store — it
+  produces one where you can no longer tell whose judgement you are reading.
 
 By design, none of these are tracked:
 
@@ -432,8 +455,19 @@ By design, none of these are tracked:
 | `memory.db` | the index — verbatim source from private repositories |
 | `local/` | scratch space for project-specific notes |
 
-The store is *about* private code even when the tool is public, so the split is
-enforced by `.gitignore` rather than by remembering.
+The split is enforced by `.gitignore` rather than by remembering.
+
+### Do not put the database in a sync folder
+
+OneDrive, Dropbox, iCloud and Google Drive all look like a harmless way to move
+the store between your own machines. They are not. The database runs in WAL
+mode, so a live store is up to three files that must stay mutually consistent —
+`memory.db`, `memory.db-wal`, `memory.db-shm`. A sync client copies them
+independently and on its own schedule, and will eventually capture a main file
+without its matching WAL. That produces a corrupt database, and the corruption
+surfaces long after the sync that caused it.
+
+To move a store deliberately: close every client, then copy the file.
 
 ## Deliberately not built
 
