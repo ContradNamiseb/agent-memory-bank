@@ -55,6 +55,10 @@ public static class MemoryDatabase
         db.Execute("PRAGMA foreign_keys = ON");
         db.Execute("PRAGMA synchronous = NORMAL");
         db.Execute(SchemaSql);
+
+        // Schema.sql only ever creates what is missing, so an existing database
+        // would otherwise stay on whatever shape it was first created with.
+        Migrations.Apply(db);
         return db;
     }
 
