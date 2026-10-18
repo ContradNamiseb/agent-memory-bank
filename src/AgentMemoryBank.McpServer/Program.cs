@@ -27,7 +27,7 @@ internal static class Program
                 "stats" => Stats(args[1..]),
                 "note" => Note(args[1..]),
                 "verify" => VerifyNotes(args[1..]),
-                "serve" => StdioServer.RunAsync().GetAwaiter().GetResult(),
+                "serve" => Serve(args[1..]),
                 "help" or "--help" or "-h" => Help(0),
                 var unknown => Fail($"unknown command '{unknown}'"),
             };
@@ -85,7 +85,8 @@ internal static class Program
               verify [--id N] [--db PATH]
                      Re-check that the code each note cites still says what it says.
 
-              serve  Run as an MCP stdio server, exposing memory_search, memory_get and
+              serve  [--db PATH] [--settings PATH]
+                     Run as an MCP stdio server, exposing memory_search, memory_get and
                      memory_stats. Speaks JSON-RPC on stdin/stdout; logs go to stderr.
                      Intended to be launched by an MCP client, not by hand.
 
@@ -457,5 +458,23 @@ internal static class Program
         foreach (var repo in stats.PerRepo)
             Console.WriteLine($"  {repo.Repo,-26} {repo.Files,4} files  {repo.Chunks,5} chunks");
         return 0;
+    }
+
+    private static int Serve(string[] args)
+    {
+        for (var i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (arg == "--db" && i + 1 < args.Length)
+            {
+                Environment.SetEnvironmentVariable("MEMORY_BANK_DB", Path.GetFullPath(args[++i]));
+            }
+            else if (arg == "--settings" && i + 1 < args.Length)
+            {
+                Environment.SetEnvironmentVariable("MEMORY_BANK_SETTINGS", Path.GetFullPath(args[++i]));
+            }
+        }
+        Config.ReloadSettings();
+        return StdioServer.RunAsync().GetAwaiter().GetResult();
     }
 }
