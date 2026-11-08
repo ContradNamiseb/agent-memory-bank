@@ -91,7 +91,17 @@ CREATE TABLE IF NOT EXISTS session_handoff (
   active_files TEXT,
   open_questions TEXT,
   context_data TEXT,
-  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  -- The checkout it was written in, read from git at save time (v2). NULL on
+  -- handoffs saved before v2 or outside a repository. Indexed in Migrations,
+  -- not here: on an existing store these columns do not exist until it runs.
+  repo_id TEXT,
+  worktree TEXT,
+  branch TEXT,
+  head_commit TEXT,
+  dirty_paths INTEGER,
+  upstream TEXT,
+  ahead INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS handoff_by_created ON session_handoff(created_at DESC);

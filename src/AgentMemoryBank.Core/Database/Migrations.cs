@@ -23,11 +23,14 @@ namespace AgentMemoryBank.Database;
 /// <para>v1 adds no columns. It stamps the version so the first real migration
 /// has a known floor to start from, and it exists now rather than later because
 /// the mechanism has to predate the change that needs it.</para>
+///
+/// <para>v2 records on each session handoff the checkout it was written in, so
+/// a handoff read on another branch, worktree or clone can say so.</para>
 /// </summary>
 public static class Migrations
 {
     /// <summary>Bump when adding a step below.</summary>
-    public const int CurrentVersion = 1;
+    public const int CurrentVersion = 2;
 
     /// <summary>Apply every step the database has not had, in order.</summary>
     public static void Apply(SqliteConnection db)
@@ -37,8 +40,21 @@ public static class Migrations
 
         // v1: no schema change. Establishes the version floor; see the class note.
 
+        // v2: the checkout a handoff was written in. Existing handoffs keep NULLs,
+        // which reads back as "not recorded" rather than as a false match.
+        foreach (var (column, type) in HandoffCheckoutColumns)
+            AddColumnIfMissing(db, "session_handoff", column, type);
+        db.Execute("CREATE INDEX IF NOT EXISTS handoff_by_repo ON session_handoff(repo_id, id DESC)");
+        db.Execute("CREATE INDEX IF NOT EXISTS handoff_by_worktree ON session_handoff(worktree, id DESC)");
+
         db.Execute($"PRAGMA user_version = {CurrentVersion}");
     }
+
+    private static readonly (string Column, string Type)[] HandoffCheckoutColumns =
+    [
+        ("repo_id", "TEXT"), ("worktree", "TEXT"), ("branch", "TEXT"), ("head_commit", "TEXT"),
+        ("dirty_paths", "INTEGER"), ("upstream", "TEXT"), ("ahead", "INTEGER"),
+    ];
 
     /// <summary>True when the table already has the column.</summary>
     public static bool ColumnExists(SqliteConnection db, string table, string column)
@@ -53,10 +69,8 @@ public static class Migrations
 
     /// <summary>
     /// Add a column unless it is already there, so a step is safe to re-run and
-    /// safe on a database created fresh from the current Schema.sql. Unused at
-    /// v1 and kept deliberately: it is the operation every future step will
-    /// need, and writing it under time pressure is how the ALTER gets run
-    /// unguarded against a store that already has the column.
+    /// safe on a database created fresh from the current Schema.sql, which
+    /// already has every column a step adds.
     /// </summary>
     public static void AddColumnIfMissing(SqliteConnection db, string table, string column, string type)
     {

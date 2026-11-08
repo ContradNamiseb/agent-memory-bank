@@ -35,6 +35,10 @@ internal sealed record CommandLine
     public string? NextSteps { get; private init; }
     public string? ActiveFiles { get; private init; }
     public string? OpenQuestions { get; private init; }
+    public HandoffScope Scope { get; private init; } = HandoffScope.Repo;
+
+    /// <summary>Directory whose git checkout a handoff is recorded from or checked against.</summary>
+    public string Cwd { get; private init; } = Environment.CurrentDirectory;
 
     public static CommandLine Parse(string[] args)
     {
@@ -67,6 +71,8 @@ internal sealed record CommandLine
                 case "--files" or "--active-files": options = options with { ActiveFiles = Next(arg) }; break;
                 case "--questions" or "--open-questions": options = options with { OpenQuestions = Next(arg) }; break;
                 case "--confidence": options = options with { Confidence = ParseConfidence(Next(arg)) }; break;
+                case "--scope": options = options with { Scope = ParseScope(Next(arg)) }; break;
+                case "--cwd": options = options with { Cwd = Next(arg) }; break;
                 case "--id": options = options with { Id = long.Parse(Next(arg)) }; break;
                 case "--tags":
                     options.Tags.AddRange(Next(arg).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
@@ -95,6 +101,12 @@ internal sealed record CommandLine
             ? confidence
             : throw new ArgumentException(
                 $"unknown confidence '{value}' (expected {string.Join(", ", Enum.GetNames<Confidence>()).ToLowerInvariant()})");
+
+    private static HandoffScope ParseScope(string value) =>
+        Enum.TryParse<HandoffScope>(value, ignoreCase: true, out var scope)
+            ? scope
+            : throw new ArgumentException(
+                $"unknown scope '{value}' (expected {string.Join(", ", Enum.GetNames<HandoffScope>()).ToLowerInvariant()})");
 
     private static NoteKind ParseKind(string value) =>
         Enum.TryParse<NoteKind>(value, ignoreCase: true, out var kind)

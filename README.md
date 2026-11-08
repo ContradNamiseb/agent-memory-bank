@@ -266,7 +266,7 @@ An instruction competes with everything else in the prompt. Two hooks in
 
 | hook | event | what it does |
 |---|---|---|
-| `memory-session-start.ps1` | `SessionStart` | Injects the most recent handoff, so a new session opens knowing where the last one stopped. |
+| `memory-session-start.ps1` | `SessionStart` | Injects the most recent handoff for this repository, so a new session opens knowing where the last one stopped, with a warning first if it was written on another branch, commit or worktree. |
 | `memory-recall.ps1` | `UserPromptSubmit` | Pulls identifiers out of the prompt, searches, and injects any matching notes. |
 
 Add them to `~/.claude/settings.json`:
@@ -318,9 +318,9 @@ handoffs. Every search result carries a citation, and every write demands one:
 | `memory_stats()` | Inspection | What the store holds, and row counts per repo |
 | `memory_notes_upsert(claims[], evidence[], kinds?[], confidences?[], rationales?[], tags?[], supersedes?[], dry_run?)` | Write | The only note write (replaced `memory_note_add` and `memory_note_supersede`). Evidence is required and checked; a claim already recorded does not fail: same claim + same evidence is *unchanged*, a changed one *supersedes* the old note. Never overwrites |
 | `memory_verify(id?)` | Verification | Re-check that cited code still says what the note says |
-| `memory_handoff_save(agent, topic, summary, next_steps, ...)` | Continuity | Save a session handoff before switching agents or hitting limits |
-| `memory_handoff_latest(agent?)` | Continuity | Retrieve the latest handoff so an incoming agent resumes instantly |
-| `memory_handoff_list(limit?, agent?)` | Continuity | List past session handoffs across all AI tools |
+| `memory_handoff_save(agent, topic, summary, next_steps, ..., working_directory?)` | Continuity | Save a session handoff before switching agents or hitting limits. Records the git checkout it was written in |
+| `memory_handoff_latest(agent?, scope?, working_directory?, max_chars?)` | Continuity | The latest handoff for this repository, led by a warning if it was written in a different checkout |
+| `memory_handoff_list(limit?, agent?, scope?, working_directory?)` | Continuity | List past session handoffs, each with the branch and commit it was written on |
 
 `kind` and `confidence` are enums in the schema. Every call passes through an
 argument guard (`ToolArgumentGuard`, shared verbatim with AgoraMCP) that maps
@@ -350,6 +350,37 @@ survives them:
    ```bash
    ./agent-memory-bank handoff latest
    ```
+
+### A handoff knows which checkout it was written in
+
+"Migration done" is true in one checkout and can be false in the next. So
+`memory_handoff_save` records, from git and never from the agent: the
+repository, worktree, branch, `HEAD` commit, how many paths were uncommitted,
+and whether the branch's commits were pushed. The repository is identified by
+`origin`'s URL (SSH and HTTPS forms match), so another clone of the same
+project is the same repository; without an `origin` it is the git directory
+shared by that repository's worktrees.
+
+`memory_handoff_latest` compares that with where it is being read, and puts
+any difference **before** the handoff:
+
+```text
+WARNING: commit `4f41706` from this handoff does not exist in this checkout. The work it describes may not exist here at all: it was never pushed, or it was made in another clone.
+WARNING: written on `feature-x` @ `4f41706` in `C:\...\wt-a`; you are on `main` @ `a1140d9` in `C:\...\lc0`. Verify before trusting 'done' claims.
+When written, `C:\...\wt-a` had 1 uncommitted path. That work is in no commit, so it exists only in that working tree, if it is there at all.
+```
+
+A missing commit gets its own line because it means more than a moved
+`HEAD`: the work may not exist here at all. When `HEAD` has moved on from the
+handoff's commit, it says whether that commit is included or not.
+
+`latest` and `list` take a scope: `repo` (the default; any worktree of this
+repository), `worktree` (this one only) or `all`. Handoffs saved before
+checkouts were recorded have none, so they show only under `all`, and a
+scoped miss says how many it left out. The checkout is read from the MCP
+server's directory unless the agent passes `working_directory`, which it
+should when it works in a different worktree. On the command line, use
+`--scope` and `--cwd`.
 
 ---
 

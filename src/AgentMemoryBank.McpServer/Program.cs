@@ -1,4 +1,5 @@
 using AgentMemoryBank;
+using AgentMemoryBank.Continuity;
 using AgentMemoryBank.Database;
 using AgentMemoryBank.Indexing;
 using AgentMemoryBank.Models;
@@ -71,9 +72,12 @@ internal static class Program
               get    <note|chunk> ID [--db PATH]
                      Inspect one note or chunk in full with lines and citations.
 
-              handoff [latest|save|list] [--agent A] [--topic T] [--summary S] [--next N] [--files F] [--db PATH]
+              handoff [latest|save|list] [--agent A] [--topic T] [--summary S] [--next N] [--files F]
+                      [--scope repo|worktree|all] [--cwd DIR] [--db PATH]
                      Cross-agent session continuity: save or view handoff snapshots to migrate between
-                     Antigravity, Claude Code, and Copilot without losing context.
+                     Antigravity, Claude Code, and Copilot without losing context. save records the
+                     git checkout of --cwd (default: here); latest warns first when it differs from
+                     yours. latest and list default to --scope repo: this repository, any worktree.
 
               stats  [--db PATH]
                      Row counts per repository.
@@ -314,16 +318,21 @@ internal static class Program
 
         if (verb is "latest")
         {
-            var latest = HandoffStore.GetLatest(db, options.Agent);
-            if (latest is null)
+            var lookup = HandoffReader.Latest(db, options.Agent, options.Scope, options.Cwd);
+            // Warnings before the handoff: the reader has to see them before "done".
+            foreach (var line in lookup.Preamble) Console.WriteLine(line);
+            if (lookup.Handoff is not { } latest)
             {
-                Console.WriteLine("No session handoffs recorded yet.");
+                Console.WriteLine(lookup.Miss);
                 return 0;
             }
 
+            Console.WriteLine();
             Console.WriteLine($"=== Session Handoff #{latest.Id} ({latest.Agent}) ===");
             Console.WriteLine($"Topic:   {latest.Topic}");
             Console.WriteLine($"Created: {latest.CreatedAt}");
+            if (latest.Checkout is { } c)
+                Console.WriteLine($"Written: `{c.BranchLabel}` @ `{c.ShortHead}` in `{c.Worktree}`");
             if (!string.IsNullOrWhiteSpace(latest.ActiveFiles))
                 Console.WriteLine($"Files:   {latest.ActiveFiles}");
             Console.WriteLine($"\n--- Summary ---\n{latest.Summary}");
@@ -347,25 +356,36 @@ internal static class Program
                 Summary = options.Summary,
                 NextSteps = options.NextSteps,
                 ActiveFiles = options.ActiveFiles,
-                OpenQuestions = options.OpenQuestions
+                OpenQuestions = options.OpenQuestions,
+                Checkout = GitCheckout.Capture(options.Cwd),
             };
 
             var saved = HandoffStore.Save(db, draft);
             Console.WriteLine($"Session handoff #{saved.Id} saved ({saved.Agent} -> '{saved.Topic}').");
+            Console.WriteLine(saved.Checkout is { } c
+                ? $"Recorded `{c.BranchLabel}` @ `{c.ShortHead}` in `{c.Worktree}`" +
+                  (c.DirtyPaths > 0 ? $", {c.DirtyPaths} uncommitted path(s)" : "") +
+                  (c.Ahead > 0 ? $", {c.Ahead} unpushed commit(s)" : "") + "."
+                : "Not in a git checkout, so none was recorded.");
             return 0;
         }
         else if (verb is "list")
         {
-            var list = HandoffStore.List(db, options.Limit, options.Agent);
+            var current = GitCheckout.Capture(options.Cwd);
+            var resolved = HandoffReader.Resolve(options.Scope, current);
+            if (resolved.Notice is not null) Console.WriteLine(resolved.Notice);
+
+            var list = HandoffStore.List(db, options.Limit, options.Agent, resolved.RepoId, resolved.Worktree);
             if (list.Count == 0)
             {
-                Console.WriteLine("No session handoffs found.");
+                Console.WriteLine(HandoffReader.Miss(db, options.Agent, resolved, current));
                 return 0;
             }
 
             foreach (var h in list)
             {
-                Console.WriteLine($"[handoff {h.Id}] {h.CreatedAt} - {h.Agent}: {h.Topic}");
+                var where = h.Checkout is { } c ? $"{c.BranchLabel}@{c.ShortHead}" : "no checkout";
+                Console.WriteLine($"[handoff {h.Id}] {h.CreatedAt} - {h.Agent} [{where}]: {h.Topic}");
             }
             return 0;
         }

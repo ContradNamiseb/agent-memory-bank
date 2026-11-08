@@ -12,10 +12,10 @@ namespace AgentMemoryBank.Tests;
 /// change. These tests build a pre-migration database on purpose and then open it
 /// through the real entry point.
 ///
-/// <para>v1 changes no columns, so what is under test is the mechanism itself:
-/// that an old store is recognised, stamped, and left with its data intact, and
-/// that the column-adding primitive future steps depend on is correct before
-/// anything relies on it.</para>
+/// <para>What is under test is the mechanism itself: that an old store is
+/// recognised, stamped, and left with its data intact, and that the
+/// column-adding primitive the steps depend on is correct. The v2 handoff
+/// columns are covered in HandoffCheckoutTests.</para>
 /// </summary>
 public sealed class MigrationTests
 {
@@ -89,8 +89,8 @@ public sealed class MigrationTests
     [Fact]
     public void AddColumnIfMissing_adds_once_and_is_safe_to_repeat()
     {
-        // Nothing calls this at v1. It is the primitive every future step will use,
-        // so it is verified now rather than in the same change that first needs it.
+        // The primitive every column-adding step uses, verified on its own so a
+        // failure points here rather than at whichever step first tripped on it.
         using var repo = new TempRepo();
         CreateLegacyStore(repo.DbPath);
 
