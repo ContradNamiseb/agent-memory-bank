@@ -1,10 +1,7 @@
-using System.Diagnostics;
-using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using AgentMemoryBank.Database;
 using AgentMemoryBank.Models;
-using AgentMemoryBank.Verification;
 
 namespace AgentMemoryBank.Indexing;
 
@@ -65,6 +62,7 @@ public static partial class GitCommitMiner
 
         var runId = MemoryDatabase.StartRun(db, tool: "phase-b-git-miner", note: note);
         var results = new List<RepoGitMineResult>();
+        var revs = new List<string>();
 
         foreach (var repo in repos)
         {
@@ -76,11 +74,18 @@ public static partial class GitCommitMiner
                     Repo = repo,
                     Error = $"not a git repository: {repoDirectory}"
                 });
+                revs.Add($"{repo}@none");
                 continue;
             }
 
             results.Add(MineRepo(db, repo, repoDirectory, runId, repoRoot, options, onMined));
+            var head = GitFileScanner.HeadRevision(repoDirectory);
+            var shortRev = head is null ? "none" : head[..Math.Min(12, head.Length)];
+            revs.Add($"{repo}@{shortRev}");
         }
+
+        using var stamp = db.Prepare("UPDATE run SET git_rev = $rev WHERE id = $id", "$rev", "$id");
+        stamp.SetAll(string.Join(' ', revs), runId).ExecuteNonQuery();
 
         return new GitMineRun(runId, results, DateTime.UtcNow - start);
     }
@@ -105,7 +110,7 @@ public static partial class GitCommitMiner
                 continue;
             }
 
-            if (!options.OverwriteExisting && IsAlreadyMined(db, commit.ShortSha))
+            if (!options.OverwriteExisting && IsAlreadyMined(db, repoName, commit.ShortSha))
             {
                 skipped++;
                 continue;
@@ -154,7 +159,7 @@ public static partial class GitCommitMiner
             args.Add($"--since={options.Since}");
         }
 
-        var output = RunGit(repoDirectory, [.. args]);
+        var output = GitFileScanner.RunGit(repoDirectory, [.. args]);
         return ParseLogOutput(output);
     }
 
@@ -277,11 +282,18 @@ public static partial class GitCommitMiner
         };
     }
 
-    private static bool IsAlreadyMined(SqliteConnection db, string shortSha)
+    private static bool IsAlreadyMined(SqliteConnection db, string repoName, string shortSha)
     {
         using var cmd = db.CreateCommand();
-        cmd.CommandText = "SELECT 1 FROM note WHERE evidence LIKE '%' || $sha || '%' LIMIT 1";
+        cmd.CommandText = """
+            SELECT 1 FROM note
+            WHERE superseded_by IS NULL
+              AND evidence LIKE '%' || $sha || '%'
+              AND evidence LIKE '%' || $repo || '%'
+            LIMIT 1
+            """;
         cmd.Parameters.AddWithValue("$sha", shortSha);
+        cmd.Parameters.AddWithValue("$repo", repoName);
         return cmd.ExecuteScalar() is not null;
     }
 
@@ -293,30 +305,6 @@ public static partial class GitCommitMiner
                            !line.StartsWith("Signed-off-by:", StringComparison.OrdinalIgnoreCase))
             .ToList();
         return string.Join("\n", lines).Trim();
-    }
-
-    private static string RunGit(string workingDirectory, params string[] arguments)
-    {
-        var info = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            StandardOutputEncoding = Encoding.UTF8,
-        };
-        foreach (var argument in arguments) info.ArgumentList.Add(argument);
-
-        using var process = Process.Start(info)
-            ?? throw new InvalidOperationException("could not start git");
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException(
-                $"git {string.Join(' ', arguments)} failed in {workingDirectory}: {stderr.Trim()}");
-        return stdout;
     }
 
     [GeneratedRegex(@"^(wip|format|formatting|typo|clean\s*up|cleanup|bump|update\s*readme|update\s*version|version\s*bump)$", RegexOptions.IgnoreCase)]

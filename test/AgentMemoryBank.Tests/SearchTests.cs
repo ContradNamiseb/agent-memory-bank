@@ -86,6 +86,45 @@ public class SearchTests
     }
 
     [Fact]
+    public void Combined_search_with_repo_filter_scopes_both_notes_and_chunks()
+    {
+        using var repo = new TempRepo();
+        repo.Write("src/options.h", "struct Options {\n  float retry_jitter = 0.25f;\n};\n");
+        repo.Commit();
+
+        var otherFile = Path.Combine(repo.Root, "other", "src", "other.h");
+        Directory.CreateDirectory(Path.GetDirectoryName(otherFile)!);
+        File.WriteAllText(otherFile, "struct Other {\n  float retry_jitter = 0.50f;\n};\n");
+
+        using var db = MemoryDatabase.Open(repo.DbPath);
+        Indexer.IndexRepo(db, repo.RepoName, repo.RepoDirectory);
+
+        var first = Assert.IsType<AgentMemoryBank.Models.NoteWriteResult.Accepted>(
+            NoteStore.Add(db, new NoteDraft
+            {
+                Claim = "retry_jitter defaults to 0.25 in fixture",
+                Evidence = "fixture/src/options.h:2",
+            }, repoRoot: repo.Root));
+        var second = Assert.IsType<AgentMemoryBank.Models.NoteWriteResult.Accepted>(
+            NoteStore.Add(db, new NoteDraft
+            {
+                Claim = "retry_jitter defaults to 0.50 in other",
+                Evidence = "other/src/other.h:2",
+            }, repoRoot: repo.Root));
+
+        var fixtureHits = MemorySearch.Search(db, "retry_jitter", repo: repo.RepoName);
+        Assert.Equal([first.Id], fixtureHits.Notes.Select(n => n.Id));
+        Assert.NotEmpty(fixtureHits.Chunks);
+
+        var otherHits = MemorySearch.Search(db, "retry_jitter", repo: "other");
+        Assert.Equal([second.Id], otherHits.Notes.Select(n => n.Id));
+        Assert.Empty(otherHits.Chunks);
+
+        var unfiltered = MemorySearch.Search(db, "retry_jitter");
+        Assert.Equal(2, unfiltered.Notes.Count);
+    }
+
+    [Fact]
     public void Searching_an_empty_store_returns_nothing_rather_than_failing()
     {
         using var repo = new TempRepo();

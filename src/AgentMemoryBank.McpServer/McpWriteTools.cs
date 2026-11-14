@@ -133,11 +133,26 @@ public sealed class McpWriteTools
         long? id = null)
     {
         using var db = Open();
-        var results = EvidenceVerifier.Verify(db, id);
+        return Verify(db, id);
+    }
+
+    internal static string Verify(SqliteConnection db, long? id = null, string? repoRoot = null)
+    {
+        var results = EvidenceVerifier.Verify(db, id, repoRoot);
         if (results.Count == 0)
-            return id is null
-                ? "There are no notes to verify."
-                : $"Error: no note with id {id}; {NoteStore.IdHint(db, id.Value)}.";
+        {
+            if (id is null)
+                return "There are no notes to verify.";
+
+            if (MemorySearch.GetNote(db, id.Value)?.SupersededBy is { } by)
+            {
+                var head = NoteStore.LiveHead(db, id.Value);
+                var chain = head == $"note {by}" ? head : $"note {by} (current live head: {head})";
+                return $"Note {id.Value} was superseded by {chain}, so it is no longer verified.";
+            }
+
+            return $"Error: no note with id {id}; {NoteStore.IdHint(db, id.Value)}.";
+        }
 
         var text = new StringBuilder();
         var attention = results.Where(r => r.NeedsAttention).ToList();

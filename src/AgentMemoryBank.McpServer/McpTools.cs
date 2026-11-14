@@ -66,7 +66,7 @@ public sealed class McpTools
     public static string Search(
         [Description("An identifier, a phrase, or a few keywords.")]
         string query,
-        [Description("Only chunks from this repository. Unknown names are refused with the valid list.")]
+        [Description("Only notes and chunks from this repository. Unknown names are refused with the valid list.")]
         string? repo = null,
         [Description("Only notes of this kind.")]
         NoteKind? kind = null,

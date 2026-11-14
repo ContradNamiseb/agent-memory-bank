@@ -19,7 +19,7 @@ public static class GitFileScanner
     {
         try
         {
-            return Run(repoDirectory, "rev-parse", "HEAD").Trim();
+            return RunGit(repoDirectory, "rev-parse", "HEAD").Trim();
         }
         catch (InvalidOperationException)
         {
@@ -29,10 +29,11 @@ public static class GitFileScanner
 
     /// <summary>Tracked paths, repo-relative, using forward slashes as git reports them.</summary>
     public static IReadOnlyList<string> ListFiles(string repoDirectory) =>
-        Run(repoDirectory, "ls-files", "-z")
+        RunGit(repoDirectory, "ls-files", "-z")
             .Split('\0', StringSplitOptions.RemoveEmptyEntries);
 
-    private static string Run(string workingDirectory, params string[] arguments)
+    /// <summary>Run git inside a repository working directory, capturing UTF-8 stdout.</summary>
+    public static string RunGit(string workingDirectory, params string[] arguments)
     {
         var info = new ProcessStartInfo("git")
         {

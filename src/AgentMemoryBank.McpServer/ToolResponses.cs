@@ -140,38 +140,20 @@ public static class ToolResponses
 
     private static string RenderNote(SqliteConnection db, long id)
     {
-        using var cmd = db.Prepare("""
-            SELECT id, claim, rationale, evidence, anchor_symbol, anchor_text, kind, confidence,
-                   created_at, verified_at, superseded_by
-            FROM note WHERE id = $id
-            """, "$id");
-
-        var note = cmd.SetAll(id).Query(r => new
-        {
-            Claim = r.GetString("claim"),
-            Rationale = r.GetStringOrNull("rationale"),
-            Evidence = r.GetStringOrNull("evidence"),
-            Anchor = r.GetStringOrNull("anchor_symbol"),
-            Kind = r.GetStringOrNull("kind"),
-            Confidence = r.GetStringOrNull("confidence"),
-            Created = r.GetStringOrNull("created_at"),
-            Verified = r.GetStringOrNull("verified_at"),
-            Superseded = r.IsDBNull(r.GetOrdinal("superseded_by")) ? (long?)null : r.GetInt64("superseded_by"),
-        }).FirstOrDefault();
-
+        var note = MemorySearch.GetNote(db, id);
         if (note is null) return $"Error: no note with id {id}; {NoteStore.IdHint(db, id)}.";
 
         var text = new StringBuilder();
         text.AppendLine($"[note {id}] {note.Claim}");
-        text.AppendLine($"kind: {note.Kind ?? "-"} · confidence: {note.Confidence ?? "-"} · created: {note.Created ?? "-"}");
-        if (note.Superseded is not null)
-            text.AppendLine($"SUPERSEDED by note {note.Superseded} — kept as a record of having been wrong.");
+        text.AppendLine($"kind: {Lower(note.Kind)} · confidence: {Lower(note.Confidence)} · created: {note.CreatedAt ?? "-"}");
+        if (note.SupersededBy is not null)
+            text.AppendLine($"SUPERSEDED by note {note.SupersededBy} — kept as a record of having been wrong.");
         if (note.Rationale is not null) text.AppendLine($"\nwhy:\n{note.Rationale}");
         if (note.Evidence is not null) text.AppendLine($"\nevidence:\n{note.Evidence}");
-        if (note.Anchor is not null) text.AppendLine($"\nanchored to: {note.Anchor}");
-        text.AppendLine(note.Verified is null
+        if (note.AnchorSymbol is not null) text.AppendLine($"\nanchored to: {note.AnchorSymbol}");
+        text.AppendLine(note.VerifiedAt is null
             ? "\nThis note's evidence has never been re-verified; the cited code may have moved."
-            : $"\nEvidence last verified: {note.Verified}");
+            : $"\nEvidence last verified: {note.VerifiedAt}");
         return text.ToString().TrimEnd();
     }
 

@@ -28,6 +28,7 @@ internal static class Program
                 "stats" => Stats(args[1..]),
                 "note" => Note(args[1..]),
                 "verify" => VerifyNotes(args[1..]),
+                "hook" => Hook(args[1..]),
                 "serve" => Serve(args[1..]),
                 "help" or "--help" or "-h" => Help(0),
                 var unknown => Fail($"unknown command '{unknown}'"),
@@ -73,7 +74,7 @@ internal static class Program
                      Inspect one note or chunk in full with lines and citations.
 
               handoff [latest|save|list] [--agent A] [--topic T] [--summary S] [--next N] [--files F]
-                      [--scope repo|worktree|all] [--cwd DIR] [--db PATH]
+                      [--questions Q] [--context C] [--scope repo|worktree|all] [--cwd DIR] [--db PATH]
                      Cross-agent session continuity: save or view handoff snapshots to migrate between
                      Antigravity, Claude Code, and Copilot without losing context. save records the
                      git checkout of --cwd (default: here); latest warns first when it differs from
@@ -89,9 +90,15 @@ internal static class Program
               verify [--id N] [--db PATH]
                      Re-check that the code each note cites still says what it says.
 
+              hook <session-start|recall> [--db PATH]
+                     Claude Code hook runner (SessionStart injects latest handoff;
+                     UserPromptSubmit reads stdin JSON and injects strict identifier matches).
+
               serve  [--db PATH] [--settings PATH]
-                     Run as an MCP stdio server, exposing memory_search, memory_get and
-                     memory_stats. Speaks JSON-RPC on stdin/stdout; logs go to stderr.
+                     Run as an MCP stdio server exposing 9 tools (memory_search, memory_get,
+                     memory_index, memory_stats, memory_notes_upsert, memory_verify,
+                     memory_handoff_save, memory_handoff_latest, memory_handoff_list).
+                     Speaks JSON-RPC on stdin/stdout; logs go to stderr.
                      Intended to be launched by an MCP client, not by hand.
 
             Resolved configuration (from {Config.SettingsFileName}, or the environment):
@@ -182,7 +189,7 @@ internal static class Program
         using var db = MemoryDatabase.Open(options.Db);
         var gitOptions = new GitMineOptions
         {
-            MaxCommitsPerRepo = options.Limit > 0 && options.Limit != 10 ? options.Limit : null,
+            MaxCommitsPerRepo = options.LimitOption is > 0 ? options.LimitOption : null,
             Since = options.Since,
         };
 
@@ -232,15 +239,7 @@ internal static class Program
 
         if (result.Notes.Count > 0)
         {
-            Console.WriteLine($"notes ({result.Notes.Count}):");
-            foreach (var note in result.Notes)
-            {
-                Console.WriteLine($"\n  [note {note.Id}] {note.Kind?.ToString().ToLowerInvariant() ?? "-"} / " +
-                                  $"{note.Confidence?.ToString().ToLowerInvariant() ?? "-"}  score {note.Score:F2}");
-                Console.WriteLine($"  {note.Claim}");
-                if (note.Evidence is not null) Console.WriteLine($"  evidence: {note.Evidence}");
-                if (note.VerifiedAt is not null) Console.WriteLine($"  verified: {note.VerifiedAt}");
-            }
+            Console.WriteLine(HookRunner.FormatNoteHits(result.Notes));
             Console.WriteLine();
         }
 
@@ -276,36 +275,16 @@ internal static class Program
             return Fail("usage: get <note|chunk> <id>");
 
         var kind = args[0].ToLowerInvariant();
+        if (kind is not ("note" or "chunk"))
+            return Fail($"unknown kind '{kind}' (expected 'note' or 'chunk')");
+
         var options = CommandLine.Parse(args[2..]);
         using var db = MemoryDatabase.Open(options.Db);
-
-        if (kind is "note")
-        {
-            var note = MemorySearch.GetNote(db, id);
-            if (note is null) { Console.WriteLine($"note {id} not found"); return 1; }
-
-            Console.WriteLine($"[note {note.Id}] {note.Kind?.ToString().ToLowerInvariant()} / {note.Confidence?.ToString().ToLowerInvariant()}");
-            Console.WriteLine($"Claim: {note.Claim}");
-            if (!string.IsNullOrWhiteSpace(note.Rationale)) Console.WriteLine($"\nRationale:\n{note.Rationale}");
-            if (!string.IsNullOrWhiteSpace(note.Evidence)) Console.WriteLine($"\nEvidence: {note.Evidence}");
-            if (note.VerifiedAt is not null) Console.WriteLine($"Verified: {note.VerifiedAt}");
-            return 0;
-        }
-        else if (kind is "chunk")
-        {
-            var chunkWithFile = MemorySearch.GetChunk(db, id);
-            if (chunkWithFile is null) { Console.WriteLine($"chunk {id} not found"); return 1; }
-
-            var chunk = chunkWithFile.Value.Chunk;
-            Console.WriteLine($"[chunk {id}] {chunkWithFile.Value.Repo}/{chunkWithFile.Value.Path}:{chunk.LineStart}-{chunk.LineEnd} ({chunk.Kind} {chunk.Symbol})");
-            Console.WriteLine(new string('-', 70));
-            var lines = chunk.Body.Split('\n');
-            for (var i = 0; i < lines.Length; i++)
-                Console.WriteLine($"{chunk.LineStart + i,5}| {lines[i]}");
-            return 0;
-        }
-
-        return Fail($"unknown kind '{kind}' (expected 'note' or 'chunk')");
+        var rendered = kind is "note"
+            ? ToolResponses.RenderNoteById(db, id)
+            : ToolResponses.RenderChunkById(db, id);
+        Console.WriteLine(rendered);
+        return rendered.StartsWith("Error:", StringComparison.Ordinal) ? 1 : 0;
     }
 
     private static int Handoff(string[] args)
@@ -329,17 +308,7 @@ internal static class Program
             }
 
             Console.WriteLine();
-            Console.WriteLine($"=== Session Handoff #{latest.Id} ({latest.Agent}) ===");
-            Console.WriteLine($"Topic:   {latest.Topic}");
-            Console.WriteLine($"Created: {latest.CreatedAt}");
-            if (latest.Checkout is { } c)
-                Console.WriteLine($"Written: `{c.BranchLabel}` @ `{c.ShortHead}` in `{c.Worktree}`");
-            if (!string.IsNullOrWhiteSpace(latest.ActiveFiles))
-                Console.WriteLine($"Files:   {latest.ActiveFiles}");
-            Console.WriteLine($"\n--- Summary ---\n{latest.Summary}");
-            Console.WriteLine($"\n--- Next Steps ---\n{latest.NextSteps}");
-            if (!string.IsNullOrWhiteSpace(latest.OpenQuestions))
-                Console.WriteLine($"\n--- Open Questions ---\n{latest.OpenQuestions}");
+            Console.WriteLine(HookRunner.FormatHandoff(latest));
             return 0;
         }
         else if (verb is "save")
@@ -358,6 +327,7 @@ internal static class Program
                 NextSteps = options.NextSteps,
                 ActiveFiles = options.ActiveFiles,
                 OpenQuestions = options.OpenQuestions,
+                ContextData = options.ContextData,
                 Checkout = GitCheckout.Capture(options.Cwd),
             };
 
@@ -447,7 +417,18 @@ internal static class Program
         using var db = MemoryDatabase.Open(options.Db);
         var results = EvidenceVerifier.Verify(db, options.Id, options.Root);
 
-        if (results.Count == 0) { Console.WriteLine("no notes to verify"); return 0; }
+        if (results.Count == 0)
+        {
+            if (options.Id is { } targetId && MemorySearch.GetNote(db, targetId)?.SupersededBy is { } by)
+            {
+                var head = NoteStore.LiveHead(db, targetId);
+                var chain = head == $"note {by}" ? head : $"note {by} (live head: {head})";
+                Console.WriteLine($"note {targetId} was superseded by {chain}");
+                return 0;
+            }
+            Console.WriteLine("no notes to verify");
+            return 0;
+        }
 
         foreach (var result in results)
         {
@@ -467,6 +448,21 @@ internal static class Program
         _ => status.ToString().ToLowerInvariant(),
     };
 
+    private static int Hook(string[] args)
+    {
+        var subcommand = args.FirstOrDefault();
+        if (subcommand is null || subcommand.StartsWith('-'))
+            return Fail("usage: hook <session-start|recall> [--db PATH]");
+
+        var options = CommandLine.Parse(args[1..]);
+        return subcommand.ToLowerInvariant() switch
+        {
+            "session-start" => HookRunner.RunSessionStart(options.Db),
+            "recall" => HookRunner.RunRecall(options.Db),
+            _ => Fail($"unknown hook subcommand '{subcommand}' (expected 'session-start' or 'recall')"),
+        };
+    }
+
     private static int Stats(string[] args)
     {
         var options = CommandLine.Parse(args);
@@ -482,18 +478,11 @@ internal static class Program
 
     private static int Serve(string[] args)
     {
-        for (var i = 0; i < args.Length; i++)
-        {
-            var arg = args[i];
-            if (arg == "--db" && i + 1 < args.Length)
-            {
-                Environment.SetEnvironmentVariable("MEMORY_BANK_DB", Path.GetFullPath(args[++i]));
-            }
-            else if (arg == "--settings" && i + 1 < args.Length)
-            {
-                Environment.SetEnvironmentVariable("MEMORY_BANK_SETTINGS", Path.GetFullPath(args[++i]));
-            }
-        }
+        var options = CommandLine.Parse(args);
+        if (args.Contains("--db"))
+            Environment.SetEnvironmentVariable("MEMORY_BANK_DB", Path.GetFullPath(options.Db));
+        if (!string.IsNullOrWhiteSpace(options.Settings))
+            Environment.SetEnvironmentVariable("MEMORY_BANK_SETTINGS", Path.GetFullPath(options.Settings));
         Config.ReloadSettings();
         return StdioServer.RunAsync().GetAwaiter().GetResult();
     }

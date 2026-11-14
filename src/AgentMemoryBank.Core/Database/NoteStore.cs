@@ -55,10 +55,6 @@ public sealed record UpsertOutcome(UpsertAction Action, long Id, long? Replaced,
 /// </summary>
 public static class NoteStore
 {
-    /// <summary>Words that promise a claim nothing can falsify.</summary>
-    private static readonly string[] Hedges =
-        ["might", "may be", "possibly", "perhaps", "probably", "seems", "appears to", "could be"];
-
     /// <summary>
     /// Record a note, or refuse it with a reason and a worked example.
     /// </summary>
@@ -77,7 +73,7 @@ public static class NoteStore
         var claim = draft.Claim?.Trim() ?? "";
         var evidence = draft.Evidence?.Trim() ?? "";
 
-        if (!IsFalsifiable(claim, out var why))
+        if (!ClaimValidator.IsFalsifiable(claim, out var why))
             return Reject(RejectionReason.ClaimNotFalsifiable, why);
 
         var citations = Citation.ParseAll(evidence);
@@ -89,37 +85,8 @@ public static class NoteStore
             return Reject(RejectionReason.DuplicateClaim,
                 $"note {duplicateId} already claims this; supersede it instead of adding a second copy");
 
-        // Anchor to the citations that point at something real.
-        //
-        // Being indexed is not the test. Vendored trees are excluded from the
-        // index on purpose, and yet they are where some of the most valuable
-        // hazards live — a third-party default that destroys data is exactly the
-        // thing worth recording. Refusing those notes would turn the evidence
-        // rule from a quality gate into an arbitrary one, so a citation counts
-        // when the file exists on disk, whether or not it was indexed. Such a
-        // note simply gets no chunk edge and no enclosing symbol.
-        var root = repoRoot ?? Config.RepoRoot;
-        string? anchorText = null, anchorSymbol = null;
-        var citedChunks = new List<long>();
-        var anyResolved = false;
-
-        foreach (var citation in citations)
-        {
-            var indexed = Resolve(db, citation, root);
-            if (indexed is not null)
-            {
-                citedChunks.Add(indexed.Value.ChunkId);
-                anchorText ??= indexed.Value.AnchorText;
-                anchorSymbol ??= indexed.Value.Symbol;
-                anyResolved = true;
-                continue;
-            }
-
-            var fromDisk = AnchorFromDisk(citation, root);
-            if (fromDisk is null) continue;
-            anchorText ??= fromDisk;
-            anyResolved = true;
-        }
+        var (anchorText, anchorSymbol, citedChunks, anyResolved) =
+            ResolveCitations(db, citations, repoRoot ?? Config.RepoRoot);
 
         if (citations.Count > 0 && !anyResolved)
             return Reject(RejectionReason.UnresolvableAnchor,
@@ -328,33 +295,6 @@ public static class NoteStore
     }
 
     /// <summary>
-    /// A claim has to be able to turn out false. This check is deliberately weak —
-    /// it catches emptiness and pure hedging, not bad judgement — because a gate
-    /// that rejects good notes teaches authors to route around the store.
-    /// </summary>
-    private static bool IsFalsifiable(string claim, out string why)
-    {
-        why = "";
-        if (claim.Length < 12)
-        {
-            why = "the claim is too short to state anything checkable";
-            return false;
-        }
-        if (claim.EndsWith('?'))
-        {
-            why = "a question is not a claim; record what you established, not what you asked";
-            return false;
-        }
-        if (Hedges.Any(h => claim.Contains(h, StringComparison.OrdinalIgnoreCase)))
-        {
-            why = "the claim hedges ('might', 'seems', 'probably'), so nothing could contradict it; " +
-                  "state what was observed, and put the uncertainty in confidence instead";
-            return false;
-        }
-        return true;
-    }
-
-    /// <summary>
     /// The nearest existing claim, when it is near enough to be worth mentioning.
     ///
     /// <para><see cref="FindDuplicate"/> only catches a byte-identical claim, which in
@@ -369,7 +309,7 @@ public static class NoteStore
     public static (long Id, string Claim)? FindSimilar(SqliteConnection db, string claim,
         double threshold = 0.5)
     {
-        var terms = Significant(claim);
+        var terms = ClaimValidator.SignificantTerms(claim);
         if (terms.Count < 3) return null;
 
         try
@@ -386,7 +326,7 @@ public static class NoteStore
 
             foreach (var candidate in candidates)
             {
-                var other = Significant(candidate.Claim);
+                var other = ClaimValidator.SignificantTerms(candidate.Claim);
                 if (other.Count == 0) continue;
                 var shared = terms.Intersect(other).Count();
                 // Jaccard against the smaller set: a short claim fully contained in a
@@ -402,13 +342,6 @@ public static class NoteStore
         return null;
     }
 
-    /// <summary>Content words of a claim, lowercased: long enough to carry meaning.</summary>
-    private static HashSet<string> Significant(string text) =>
-        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-            .Select(t => new string(t.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant())
-            .Where(t => t.Length >= 4)
-            .ToHashSet();
-
     private static long? FindDuplicate(SqliteConnection db, string claim)
     {
         using var cmd = db.Prepare(
@@ -416,6 +349,46 @@ public static class NoteStore
             "$claim");
         var id = cmd.SetAll(claim).Query(r => r.GetInt64("id")).FirstOrDefault();
         return id == 0 ? null : id;
+    }
+
+    private sealed record ResolvedCitations(
+        string? AnchorText, string? AnchorSymbol, List<long> CitedChunks, bool AnyResolved);
+
+    /// <summary>
+    /// Anchor to the citations that point at something real.
+    ///
+    /// <para>Being indexed is not the test. Vendored trees are excluded from the
+    /// index on purpose, and yet they are where some of the most valuable hazards
+    /// live — a third-party default that destroys data is exactly the thing worth
+    /// recording. So a citation counts when the file exists on disk, whether or
+    /// not it was indexed; such a note simply gets no chunk edge or symbol.</para>
+    /// </summary>
+    private static ResolvedCitations ResolveCitations(
+        SqliteConnection db, IReadOnlyList<Citation> citations, string repoRoot)
+    {
+        string? anchorText = null, anchorSymbol = null;
+        var citedChunks = new List<long>();
+        var anyResolved = false;
+
+        foreach (var citation in citations)
+        {
+            var indexed = Resolve(db, citation, repoRoot);
+            if (indexed is not null)
+            {
+                citedChunks.Add(indexed.Value.ChunkId);
+                anchorText ??= indexed.Value.AnchorText;
+                anchorSymbol ??= indexed.Value.Symbol;
+                anyResolved = true;
+                continue;
+            }
+
+            var fromDisk = AnchorFromDisk(citation, repoRoot);
+            if (fromDisk is null) continue;
+            anchorText ??= fromDisk;
+            anyResolved = true;
+        }
+
+        return new ResolvedCitations(anchorText, anchorSymbol, citedChunks, anyResolved);
     }
 
     /// <summary>Locate the chunk containing a cited line, and pick an anchor within it.</summary>
@@ -434,15 +407,7 @@ public static class NoteStore
             .FirstOrDefault();
         if (chunk.Id == 0) return null;
 
-        string? anchor = null;
-        var absolute = Path.Combine(Config.GetRepoDirectory(citation.Repo, repoRoot), citation.Path);
-        if (File.Exists(absolute))
-        {
-            var lines = Chunker.SplitLines(File.ReadAllText(absolute));
-            if (citation.Line <= lines.Count)
-                anchor = EvidenceVerifier.ChooseAnchorText(lines, citation.Line);
-        }
-        return (chunk.Id, chunk.Symbol, anchor);
+        return (chunk.Id, chunk.Symbol, AnchorFromDisk(citation, repoRoot));
     }
 
     /// <summary>
@@ -452,13 +417,13 @@ public static class NoteStore
     /// </summary>
     private static string? AnchorFromDisk(Citation citation, string repoRoot)
     {
-        var absolute = Path.Combine(Config.GetRepoDirectory(citation.Repo, repoRoot), citation.Path);
+        var absolute = Config.ResolveCitedFilePath(citation.Repo, citation.Path, repoRoot);
         if (!File.Exists(absolute)) return null;
 
         var lines = Chunker.SplitLines(File.ReadAllText(absolute));
         return citation.Line > lines.Count
             ? null
-            : EvidenceVerifier.ChooseAnchorText(lines, citation.Line);
+            : AnchorSelector.ChooseAnchorText(lines, citation.Line);
     }
 
     private static void AddTags(SqliteConnection db, SqliteTransaction? transaction, long noteId,

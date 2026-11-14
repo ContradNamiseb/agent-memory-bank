@@ -9,18 +9,17 @@ using ModelContextProtocol.Server;
 
 namespace AgentMemoryBank.McpServer;
 
-// Kept identical to AgoraMCP's copy apart from this namespace: the two servers
-// share no library, and the guard is driven by each tool's own schema.
+// Schema-driven argument normalisation for AgentMemoryBank MCP tools.
 
 /// <summary>
 /// Sits between the client and every tool: repairs the argument mistakes a
 /// model actually makes, and turns the rest into errors it can act on.
 ///
 /// <para>Without it, a misnamed argument is silently dropped by the SDK's
-/// binder and resurfaces as an unrelated refusal ("needs a non-empty body"),
+/// binder and resurfaces as an unrelated refusal ("claims is empty"),
 /// and a bad enum value fails inside the binder as the opaque "An error
 /// occurred invoking 'x'". Both cost the caller a guess and a retry. Here a
-/// known alias (message→body, threadId→thread_id, author→actor) is mapped to
+/// known alias (statement→claim, repository→repo, author→agent) is mapped to
 /// the parameter the tool declares, "#12" becomes 12, an enum value is matched
 /// case-insensitively (or by a unique prefix), and anything still wrong comes
 /// back with the tool's full signature so the next call can be right.</para>
@@ -41,64 +40,29 @@ internal static partial class ToolArgumentGuard
     /// <summary>Canonical parameter → names models reach for instead. Applied only when the tool declares the canonical name.</summary>
     private static readonly Dictionary<string, string[]> Aliases = new()
     {
-        ["body"] = ["message", "text", "content", "msg", "review", "reply", "comment", "critique", "response"],
-        ["thread_id"] = ["thread", "tid", "thread_number", "thread_no", "id"],
-        ["handoff_id"] = ["handoff", "id"],
-        ["topic"] = ["title", "subject", "question", "headline"],
-        ["context"] = ["details", "detail", "description", "background", "body"],
-        ["since_id"] = ["since", "last_seen_message_id", "last_seen_id", "last_seen", "after_id", "after",
-                        "since_message_id", "cursor", "from_id"],
+        ["query"] = ["q", "search", "keywords", "terms", "text"],
+        ["repo"] = ["repository", "repo_name", "project"],
+        ["kind"] = ["type", "category"],
         ["limit"] = ["max", "max_results", "count", "n", "top", "max_items"],
         ["max_chars"] = ["max_length", "char_limit", "budget", "max_size", "chars", "limit_chars"],
-        ["specialty"] = ["tag", "domain", "area", "skill"],
-        ["instruction"] = ["instructions", "task", "action", "ask"],
-        ["to_agent"] = ["to", "recipient", "target", "target_agent", "receiver", "assignee", "next_agent", "pass_to"],
-        ["target_agent"] = ["to_agent", "to", "recipient", "target", "directed_to", "assignee"],
-        ["pass_to"] = ["to_agent", "to", "next_agent", "recipient", "target", "assignee"],
-        ["revision"] = ["rev", "commit", "sha", "hash", "manifest", "version", "snapshot_id"],
-        ["verdict"] = ["decision", "outcome", "result", "review_verdict"],
-        ["next_action"] = ["next_step", "next_steps", "next", "todo"],
-        ["covered_through_msg_id"] = ["covered_through", "through_msg_id", "last_msg_id", "up_to",
-                                      "through_id", "covered_through_message_id", "msg_id"],
-        ["query"] = ["q", "search", "keywords", "terms", "text"],
-        ["session_id"] = ["session", "id", "chat_id"],
-        ["question"] = ["q", "memo_question", "query"],
-        ["answer"] = ["response", "solution", "result"],
-        ["capabilities"] = ["caps", "blurb", "about", "model"],
-        ["status"] = ["state", "thread_status", "new_status"],
-        ["kind"] = ["type", "message_kind", "category"],
-        ["timeout_seconds"] = ["timeout", "wait_seconds", "timeout_s"],
-        ["title_filter"] = ["filter", "title"],
-        ["per_client"] = ["limit", "count"],
-        ["last"] = ["limit", "turns", "max_turns", "tail"],
-        ["recent_limit"] = ["limit", "recent", "last"],
-        ["digest"] = ["use_digest"],
-        ["max_age_days"] = ["max_age", "age_days"],
-        ["since_days"] = ["days", "window_days"],
-        ["stage"] = ["workflow_stage", "phase"],
-        ["source_thread_id"] = ["thread_id", "thread"],
-        ["source_msg_id"] = ["msg_id", "message_id"],
-        ["tokens"] = ["amount", "n_tokens", "token_count", "count"],
-        ["slot"] = ["workstream"],
-        // agent-memory-bank's parameters; the table is shared verbatim by both servers.
+        ["ids"] = ["id_list", "note_ids", "chunk_ids", "id"],
+        ["before_id"] = ["before", "cursor"],
+        ["include_superseded"] = ["superseded", "all"],
+        ["claims"] = ["claim", "statements"],
         ["claim"] = ["statement", "fact", "finding", "assertion"],
         ["evidence"] = ["proof", "citation", "citations", "refs", "source", "sources"],
-        ["rationale"] = ["why", "reason", "reasoning", "explanation"],
-        ["tags"] = ["tag", "labels", "label"],
-        ["ids"] = ["id_list", "note_ids", "chunk_ids", "id"],
-        ["repo"] = ["repository", "repo_name", "project"],
-        ["supersedes"] = ["replaces", "supersede", "replace", "superseded_ids"],
-        ["claims"] = ["claim", "statements"],
         ["kinds"] = ["kind"],
         ["confidences"] = ["confidence"],
         ["rationales"] = ["rationale", "why"],
-        ["next_steps"] = ["next_action", "next", "todo"],
+        ["rationale"] = ["why", "reason", "reasoning", "explanation"],
+        ["tags"] = ["tag", "labels", "label"],
+        ["supersedes"] = ["replaces", "supersede", "replace", "superseded_ids"],
+        ["dry_run"] = ["dryrun", "preview", "validate_only"],
+        ["topic"] = ["title", "subject", "headline"],
         ["summary"] = ["recap", "description"],
+        ["next_steps"] = ["next_action", "next", "todo"],
         ["active_files"] = ["files", "modified_files"],
         ["open_questions"] = ["questions", "blockers"],
-        ["dry_run"] = ["dryrun", "preview", "validate_only"],
-        ["include_superseded"] = ["superseded", "all"],
-        ["before_id"] = ["before", "cursor"],
     };
 
     public static IMcpServerBuilder WithArgumentGuard(this IMcpServerBuilder builder) =>

@@ -13,7 +13,8 @@ internal sealed record CommandLine
     public List<string> Repos { get; } = [];
     public string? Repo { get; private init; }
     public NoteKind? Kind { get; private init; }
-    public int Limit { get; private init; } = 10;
+    public int? LimitOption { get; private init; }
+    public int Limit => LimitOption ?? 10;
     public string? Since { get; private init; }
     public bool WithGit { get; private init; }
     public bool Full { get; private init; }
@@ -35,6 +36,8 @@ internal sealed record CommandLine
     public string? NextSteps { get; private init; }
     public string? ActiveFiles { get; private init; }
     public string? OpenQuestions { get; private init; }
+    public string? ContextData { get; private init; }
+    public string? Settings { get; private init; }
     public HandoffScope Scope { get; private init; } = HandoffScope.Repo;
 
     /// <summary>Directory whose git checkout a handoff is recorded from or checked against.</summary>
@@ -55,10 +58,11 @@ internal sealed record CommandLine
             switch (arg)
             {
                 case "--db": options = options with { Db = Next(arg) }; break;
+                case "--settings": options = options with { Settings = Next(arg) }; break;
                 case "--root": options = options with { Root = Next(arg) }; break;
                 case "--repo": options.Repos.Add(Next(arg)); break;
                 case "--kind": options = options with { Kind = ParseKind(Next(arg)) }; break;
-                case "--limit": options = options with { Limit = int.Parse(Next(arg)) }; break;
+                case "--limit": options = options with { LimitOption = int.Parse(Next(arg)) }; break;
                 case "--since": options = options with { Since = Next(arg) }; break;
                 case "--note": options = options with { Note = Next(arg) }; break;
                 case "--claim": options = options with { Claim = Next(arg) }; break;
@@ -70,6 +74,7 @@ internal sealed record CommandLine
                 case "--next" or "--next-steps": options = options with { NextSteps = Next(arg) }; break;
                 case "--files" or "--active-files": options = options with { ActiveFiles = Next(arg) }; break;
                 case "--questions" or "--open-questions": options = options with { OpenQuestions = Next(arg) }; break;
+                case "--context" or "--context-data": options = options with { ContextData = Next(arg) }; break;
                 case "--confidence": options = options with { Confidence = ParseConfidence(Next(arg)) }; break;
                 case "--scope": options = options with { Scope = ParseScope(Next(arg)) }; break;
                 case "--cwd": options = options with { Cwd = Next(arg) }; break;

@@ -17,30 +17,35 @@ public sealed record IndexEntry(
 /// </summary>
 public static class NoteIndex
 {
+    internal const string RepoFilterSql = """
+        ($repo IS NULL
+         OR n.evidence LIKE '%' || $repo || '/%'
+         OR n.evidence LIKE '%' || $repo || ':%'
+         OR EXISTS (SELECT 1 FROM edge e
+                    JOIN chunk c ON c.id = e.dst_id
+                    JOIN file f ON f.id = c.file_id
+                    WHERE e.src_kind = 'note' AND e.src_id = n.id
+                      AND e.dst_kind = 'chunk' AND f.repo = $repo))
+        """;
+
     /// <summary>
     /// Notes matching every given filter, newest first. A note belongs to a
     /// repository when one of its citations resolved into that repository's
-    /// index, or when its evidence names the repository as a path prefix —
-    /// the second catches citations into vendored or unindexed trees, which
-    /// are deliberately allowed and get no index edge.
+    /// index, or when its evidence names the repository as a path/commit prefix —
+    /// the second catches citations into vendored or unindexed trees and mined
+    /// commits, which do not always carry chunk edges.
     /// </summary>
     public static (IReadOnlyList<IndexEntry> Entries, int Total) List(SqliteConnection db,
         string? repo = null, NoteKind? kind = null, string? tag = null, bool includeSuperseded = false,
         int limit = 200, long beforeId = 0)
     {
-        const string filter = """
+        const string filter = $"""
             FROM note n
             WHERE ($kind IS NULL OR n.kind = $kind)
               AND ($all OR n.superseded_by IS NULL)
               AND ($before = 0 OR n.id < $before)
               AND ($tag IS NULL OR EXISTS (SELECT 1 FROM tag t WHERE t.note_id = n.id AND t.tag = $tag))
-              AND ($repo IS NULL
-                   OR n.evidence LIKE '%' || $repo || '/%'
-                   OR EXISTS (SELECT 1 FROM edge e
-                              JOIN chunk c ON c.id = e.dst_id
-                              JOIN file f ON f.id = c.file_id
-                              WHERE e.src_kind = 'note' AND e.src_id = n.id
-                                AND e.dst_kind = 'chunk' AND f.repo = $repo))
+              AND {RepoFilterSql}
             """;
         string[] names = ["$kind", "$all", "$before", "$tag", "$repo"];
         object?[] values =

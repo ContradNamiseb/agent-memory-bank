@@ -33,8 +33,8 @@ param(
     # Releases kept besides the new one; older ones are removed once nothing runs them.
     [int]$Keep = 3,
     [string]$Root = $PSScriptRoot,
-    [string]$Project = (Join-Path $PSScriptRoot 'src\AgentMemoryBank.McpServer'),
-    [string]$Exe = 'agent-memory-bank.exe'
+    [string]$Project = (Join-Path (Join-Path $PSScriptRoot 'src') 'AgentMemoryBank.McpServer'),
+    [string]$Exe = $(if ($IsWindows -or $env:OS -eq 'Windows_NT') { 'agent-memory-bank.exe' } else { 'agent-memory-bank' })
 )
 $ErrorActionPreference = 'Stop'
 
@@ -43,21 +43,23 @@ $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $target = Join-Path $releases $stamp
 
 dotnet publish $Project -c $Configuration -o $target --nologo
-if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE; publish\ was not changed" }
+if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXITCODE; publish/ was not changed" }
 
 # Smoke-test the release before anything points at it.
 & (Join-Path $target $Exe) help | Out-Null
-if ($LASTEXITCODE -ne 0) { throw "$Exe help failed in $target; publish\ was not changed" }
+if ($LASTEXITCODE -ne 0) { throw "$Exe help failed in $target; publish/ was not changed" }
 
+$isWinHost = $IsWindows -or ($env:OS -eq 'Windows_NT')
+$linkType = if ($isWinHost) { 'Junction' } else { 'SymbolicLink' }
 $link = Join-Path $Root 'publish'
 $current = Get-Item -LiteralPath $link -Force -ErrorAction SilentlyContinue
-if ($current -and $current.LinkType -eq 'Junction') {
+if ($current -and $current.LinkType -in 'Junction', 'SymbolicLink') {
     $current.Delete()  # removes the link only, never the release it points at
 } elseif ($current) {
     Move-Item -LiteralPath $link -Destination (Join-Path $releases "legacy-$stamp")
 }
-New-Item -ItemType Junction -Path $link -Target $target | Out-Null
-"publish -> releases\$stamp"
+New-Item -ItemType $linkType -Path $link -Target $target | Out-Null
+"publish -> releases/$stamp"
 
 # A release is removed only when no process holds any image in it: Windows
 # refuses an exclusive open of a loaded exe or dll. Checking only the exe is not

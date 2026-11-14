@@ -73,11 +73,12 @@ dotnet publish src/AgentMemoryBank.McpServer -c Release -o publish
 ```
 
 That produces `publish/agent-memory-bank.exe` on Windows and
-`publish/agent-memory-bank` on Linux and macOS. To re-publish on Windows while
+`publish/agent-memory-bank` on Linux and macOS. To re-publish while
 agent sessions are running it, use `pwsh -File publish.ps1` instead: it
-publishes into `releases/<timestamp>/` and points a `publish` junction at it, so
-running servers keep going, new launches get the new build, and nothing has to
-be killed. Never `taskkill /IM` the server: some clients (OpenCode) do not
+publishes into `releases/<timestamp>/` and points a `publish` link at it
+(junction on Windows, symlink on Linux/macOS), so running servers keep going,
+new launches get the new build, and nothing has to be killed. Never
+`taskkill /IM` the server: some clients (OpenCode) do not
 respawn a dead MCP server. It is not on your PATH, so every
 command below is written against the full path to it — substitute your own.
 
@@ -261,38 +262,38 @@ populated store is a real "not recorded", not a broken connection.
 
 ### 6. Or skip the asking entirely (Claude Code)
 
-An instruction competes with everything else in the prompt. Two hooks in
-`hooks/` make recall happen whether or not the agent thinks to ask:
+An instruction competes with everything else in the prompt. Two native hook
+subcommands make recall happen automatically on Windows, macOS, and Linux
+without spawning a shell wrapper:
 
-| hook | event | what it does |
+| command | event | what it does |
 |---|---|---|
-| `memory-session-start.ps1` | `SessionStart` | Injects the most recent handoff for this repository, so a new session opens knowing where the last one stopped, with a warning first if it was written on another branch, commit or worktree. |
-| `memory-recall.ps1` | `UserPromptSubmit` | Pulls identifiers out of the prompt, searches, and injects any matching notes. |
+| `agent-memory-bank hook session-start` | `SessionStart` | Injects the most recent handoff for this repository, so a new session opens knowing where the last one stopped, with a warning first if it was written on another branch, commit or worktree. |
+| `agent-memory-bank hook recall` | `UserPromptSubmit` | Pulls identifiers out of the prompt, searches, and injects any matching notes. |
 
-Add them to `~/.claude/settings.json`:
+Add them to `~/.claude/settings.json` (use `agent-memory-bank.exe` on Windows, or `agent-memory-bank` on Linux/macOS):
 
 ```json
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "powershell",
-                    "args": ["-NoProfile", "-File",
-                             "C:/path/to/agent-memory-bank/hooks/memory-session-start.ps1"] }] }
+      { "hooks": [{ "type": "command", "command": "C:/path/to/publish/agent-memory-bank.exe",
+                    "args": ["hook", "session-start"] }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "powershell",
-                    "args": ["-NoProfile", "-File",
-                             "C:/path/to/agent-memory-bank/hooks/memory-recall.ps1"] }] }
+      { "hooks": [{ "type": "command", "command": "C:/path/to/publish/agent-memory-bank.exe",
+                    "args": ["hook", "recall"] }] }
     ]
   }
 }
 ```
 
-Both resolve the executable from `$env:AGENT_MEMORY_BANK_EXE`, falling back to
-`../publish/agent-memory-bank.exe` relative to the script. Both exit silently on
-any failure: a hook that breaks session start is worse than no hook.
+Both exit with status `0` and emit nothing on any failure or uninitialized database:
+a hook that breaks session start is worse than no hook. The PowerShell scripts in
+`hooks/` (`memory-session-start.ps1` and `memory-recall.ps1`) remain as thin wrappers
+around those subcommands for setups already pointing at them.
 
-Two deliberate choices in `memory-recall.ps1` are worth knowing, because both
+Two deliberate choices in `hook recall` are worth knowing, because both
 were wrong in the first draft and testing caught them:
 
 - **It searches identifiers, not words.** Given `is policy_eval_temp still

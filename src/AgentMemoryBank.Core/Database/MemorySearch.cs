@@ -104,9 +104,9 @@ public static class MemorySearch
     /// </summary>
     public static IReadOnlyList<NoteHit> SearchNotes(SqliteConnection db, string query,
         NoteKind? kind = null, int limit = 10, bool includeSuperseded = false,
-        MatchMode mode = MatchMode.Strict)
+        MatchMode mode = MatchMode.Strict, string? repo = null)
     {
-        using var cmd = db.Prepare("""
+        using var cmd = db.Prepare($"""
             SELECT n.id, n.claim, n.rationale, n.evidence, n.kind, n.confidence,
                    n.anchor_symbol, n.created_at, n.verified_at, n.superseded_by,
                    bm25(note_fts, 5.0, 1.0, 2.0) AS score
@@ -115,12 +115,14 @@ public static class MemorySearch
             WHERE note_fts MATCH $match
               AND ($kind IS NULL OR n.kind = $kind)
               AND ($includeSuperseded OR n.superseded_by IS NULL)
+              AND {NoteIndex.RepoFilterSql}
             ORDER BY score
             LIMIT $limit
-            """, "$match", "$kind", "$includeSuperseded", "$limit");
+            """, "$match", "$kind", "$includeSuperseded", "$repo", "$limit");
 
+        var repoFilter = string.IsNullOrWhiteSpace(repo) ? null : repo.Trim();
         return cmd.SetAll(BuildMatchExpression(query, mode), kind?.ToString().ToLowerInvariant(),
-                includeSuperseded ? 1 : 0, limit)
+                includeSuperseded ? 1 : 0, repoFilter, limit)
             .Query(r => new NoteHit(
                 Id: r.GetInt64("id"),
                 Claim: r.GetString("claim"),
@@ -152,13 +154,13 @@ public static class MemorySearch
         int chunkLimit = 3, bool notesOnly = false)
     {
         var strict = new SearchResult(query,
-            SearchNotes(db, query, kind, limit),
+            SearchNotes(db, query, kind, limit, repo: repo),
             notesOnly ? [] : SearchChunks(db, query, repo, limit: chunkLimit));
 
         if (strict.Total > 0 || !CanLoosen(query)) return strict;
 
         return new SearchResult(query,
-            SearchNotes(db, query, kind, limit, mode: MatchMode.Loosened),
+            SearchNotes(db, query, kind, limit, mode: MatchMode.Loosened, repo: repo),
             notesOnly ? [] : SearchChunks(db, query, repo, limit: chunkLimit, mode: MatchMode.Loosened),
             MatchMode.Loosened);
     }

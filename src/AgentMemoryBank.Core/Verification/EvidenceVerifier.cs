@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using AgentMemoryBank.Database;
 using AgentMemoryBank.Indexing.Chunkers;
@@ -55,7 +54,7 @@ public sealed record VerificationResult(
 /// Still there, flag <c>Moved</c>; gone too, flag <c>Broken</c>.</item>
 /// </list>
 /// </summary>
-public static partial class EvidenceVerifier
+public static class EvidenceVerifier
 {
     /// <summary>Verify one note, or every note that has not been superseded.</summary>
     public static IReadOnlyList<VerificationResult> Verify(SqliteConnection db, long? noteId = null,
@@ -97,7 +96,7 @@ public static partial class EvidenceVerifier
             .Query(r => (Id: r.GetInt64("id"), Sha: r.GetString("content_sha")))
             .FirstOrDefault();
 
-        var absolute = Path.Combine(Config.GetRepoDirectory(citation.Repo, repoRoot), citation.Path);
+        var absolute = Config.ResolveCitedFilePath(citation.Repo, citation.Path, repoRoot);
         if (!File.Exists(absolute))
             return new VerificationResult(noteId, VerificationStatus.Broken,
                 $"The cited file no longer exists: {citation}", citation);
@@ -118,10 +117,10 @@ public static partial class EvidenceVerifier
         // 2. The anchor text is still there, exactly once: follow it.
         if (!string.IsNullOrWhiteSpace(anchorText))
         {
-            var normalisedAnchor = Normalise(anchorText);
+            var normalisedAnchor = AnchorSelector.Normalise(anchorText);
             var matches = new List<int>();
             for (var i = 0; i < lines.Count; i++)
-                if (Normalise(lines[i]) == normalisedAnchor) matches.Add(i + 1);
+                if (AnchorSelector.Normalise(lines[i]) == normalisedAnchor) matches.Add(i + 1);
 
             if (matches.Count == 1)
             {
@@ -169,57 +168,12 @@ public static partial class EvidenceVerifier
             $"{citation.Path} changed and the note has no anchor to re-locate it by.", citation, citation.Line);
     }
 
-    /// <summary>
-    /// Pick the line worth anchoring to.
-    ///
-    /// <para>The cited line itself wins whenever it can carry the anchor, and
-    /// that preference is not a tie-breaker — it is the point. A note about
-    /// <c>retry_backoff = 1.5f</c> that anchored to the explanatory comment above
-    /// it would keep matching after someone changed the value, and verification
-    /// would report the note as fine while the thing it describes had moved out
-    /// from under it. Silent false confidence is the worst failure this store
-    /// has.</para>
-    ///
-    /// <para>Only when the cited line cannot serve — it is blank, or trivial like
-    /// <c>}</c> or <c>return;</c>, or repeats elsewhere in the file so a match
-    /// would be ambiguous — does the search widen to its neighbours, scoring them
-    /// by rarity, substance, and closeness.</para>
-    /// </summary>
-    public static string? ChooseAnchorText(IReadOnlyList<string> fileLines, int citedLine, int window = 2)
-    {
-        if (fileLines.Count == 0 || citedLine < 1 || citedLine > fileLines.Count) return null;
+    /// <summary>Pick the line worth anchoring to. Delegates to <see cref="AnchorSelector.ChooseAnchorText"/>.</summary>
+    public static string? ChooseAnchorText(IReadOnlyList<string> fileLines, int citedLine, int window = 2) =>
+        AnchorSelector.ChooseAnchorText(fileLines, citedLine, window);
 
-        var counts = fileLines.GroupBy(Normalise).ToDictionary(g => g.Key, g => g.Count());
-
-        var cited = Normalise(fileLines[citedLine - 1]);
-        if (CanAnchor(cited, counts)) return cited;
-
-        string? best = null;
-        var bestScore = int.MinValue;
-        var from = Math.Max(1, citedLine - window);
-        var to = Math.Min(fileLines.Count, citedLine + window);
-        for (var line = from; line <= to; line++)
-        {
-            var normalised = Normalise(fileLines[line - 1]);
-            if (!CanAnchor(normalised, counts)) continue;
-
-            var score = Math.Min(normalised.Length, 80) - 3 * Math.Abs(line - citedLine);
-            if (score > bestScore) { bestScore = score; best = normalised; }
-        }
-        return best;
-    }
-
-    /// <summary>A line can anchor only if it is unique in the file and says something.</summary>
-    private static bool CanAnchor(string normalised, Dictionary<string, int> counts) =>
-        normalised.Length >= 8
-        && normalised.Any(char.IsLetterOrDigit)
-        && counts.GetValueOrDefault(normalised, 1) == 1;
-
-    /// <summary>
-    /// Collapse whitespace before comparing. Without this every reformat looks
-    /// like a deletion, and the store cries wolf after each formatting pass.
-    /// </summary>
-    public static string Normalise(string line) => WhitespaceRegex().Replace(line, " ").Trim();
+    /// <summary>Collapse whitespace before comparing. Delegates to <see cref="AnchorSelector.Normalise"/>.</summary>
+    public static string Normalise(string line) => AnchorSelector.Normalise(line);
 
     private static void Touch(SqliteConnection db, long noteId)
     {
@@ -241,7 +195,4 @@ public static partial class EvidenceVerifier
         using var write = db.Prepare("UPDATE note SET evidence = $evidence WHERE id = $id", "$evidence", "$id");
         write.SetAll(updated, noteId).ExecuteNonQuery();
     }
-
-    [GeneratedRegex(@"\s+")]
-    private static partial Regex WhitespaceRegex();
 }

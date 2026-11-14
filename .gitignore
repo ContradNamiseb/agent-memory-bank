@@ -13,9 +13,6 @@ memory.db
 memory.db-wal
 memory.db-shm
 
-# The JS prototype's bin/ holds source, not build output.
-!reference/prototype-js/bin/
-
 # Project-specific configuration and notes: never tracked, never pushed.
 local/
 memory-bank.local.json

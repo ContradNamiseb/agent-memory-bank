@@ -128,69 +128,27 @@ public static class Indexer
 
         foreach (var relativePath in paths)
         {
-            var absolutePath = Path.Combine(repoDirectory, relativePath);
-            byte[] bytes;
-            try
+            if (!TryReadSourceBytes(repoDirectory, relativePath, options.MaxFileBytes, fileErrors,
+                    out var bytes, out var fileSkipped))
             {
-                var info = new FileInfo(absolutePath);
-                // git ls-files reports submodule gitlinks as paths; they are directories on disk.
-                if (!info.Exists || info.Length > options.MaxFileBytes) { skipped++; continue; }
-                bytes = File.ReadAllBytes(absolutePath);
-            }
-            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
-            {
-                fileErrors.Add($"{relativePath}: {e.Message}");
+                if (fileSkipped) skipped++;
                 continue;
             }
 
-            if (bytes.Contains((byte)0)) { skipped++; continue; }   // binary without a telling extension
-
-            var sha = Convert.ToHexStringLower(SHA256.HashData(bytes));
-            var existing = selectFile.SetAll(repo, relativePath)
-                .Query(r => (Id: r.GetInt64(0), Sha: r.GetString(1)))
-                .FirstOrDefault();
-
-            if (existing.Id != 0 && existing.Sha == sha && !full)
+            if (!UpsertIndexedFile(selectFile, insertFile, updateFile, touchFile, deleteChunks, insertChunk,
+                    repo, relativePath, bytes, revision, now, full, out var chunksWritten))
             {
-                touchFile.SetAll(revision, now, existing.Id).ExecuteNonQuery();
                 skipped++;
                 continue;
             }
 
-            var language = Chunker.LanguageFor(relativePath);
-            var chunks = Chunker.ChunkText(language, DecodeUtf8(bytes));
-
-            long fileId;
-            if (existing.Id != 0)
-            {
-                fileId = existing.Id;
-                updateFile.SetAll(language, sha, revision, now, fileId).ExecuteNonQuery();
-                deleteChunks.SetAll(fileId).ExecuteNonQuery();
-            }
-            else
-            {
-                fileId = (long)insertFile.SetAll(repo, relativePath, language, sha, revision, now).ExecuteScalar()!;
-            }
-
-            foreach (var chunk in chunks)
-                insertChunk.SetAll(fileId, chunk.Kind, chunk.Symbol, chunk.LineStart, chunk.LineEnd, chunk.Body)
-                    .ExecuteNonQuery();
-
             indexed++;
-            chunkCount += chunks.Count;
-            onFile?.Invoke(relativePath, chunks.Count);
+            chunkCount += chunksWritten;
+            onFile?.Invoke(relativePath, chunksWritten);
         }
 
         // Files that left the repository must leave the index too.
-        using var selectAll = db.Prepare("SELECT id, path FROM file WHERE repo = $repo", "$repo");
-        selectAll.Transaction = transaction;
-        var stored = selectAll.SetAll(repo).Query(r => (Id: r.GetInt64(0), Path: r.GetString(1)));
-        foreach (var row in stored.Where(row => !present.Contains(row.Path)))
-        {
-            deleteChunks.SetAll(row.Id).ExecuteNonQuery();
-            deleteFile.SetAll(row.Id).ExecuteNonQuery();
-            removed++;
-        }
+        removed = PruneDeletedFiles(db, transaction, repo, present, deleteChunks, deleteFile);
 
         transaction.Commit();
 
@@ -206,12 +164,105 @@ public static class Indexer
         };
     }
 
+    private static bool TryReadSourceBytes(string repoDirectory, string relativePath, long maxFileBytes,
+        List<string> fileErrors, out byte[] bytes, out bool skipped)
+    {
+        bytes = [];
+        skipped = false;
+        var absolutePath = Path.Combine(repoDirectory, relativePath);
+        try
+        {
+            var info = new FileInfo(absolutePath);
+            // git ls-files reports submodule gitlinks as paths; they are directories on disk.
+            if (!info.Exists || info.Length > maxFileBytes)
+            {
+                skipped = true;
+                return false;
+            }
+            bytes = File.ReadAllBytes(absolutePath);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            fileErrors.Add($"{relativePath}: {e.Message}");
+            return false;
+        }
+
+        if (bytes.Contains((byte)0))   // binary without a telling extension
+        {
+            skipped = true;
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool UpsertIndexedFile(
+        SqliteCommand selectFile, SqliteCommand insertFile, SqliteCommand updateFile,
+        SqliteCommand touchFile, SqliteCommand deleteChunks, SqliteCommand insertChunk,
+        string repo, string relativePath, byte[] bytes, string? revision, string now,
+        bool full, out int chunksWritten)
+    {
+        var sha = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        var existing = selectFile.SetAll(repo, relativePath)
+            .Query(r => (Id: r.GetInt64(0), Sha: r.GetString(1)))
+            .FirstOrDefault();
+
+        if (existing.Id != 0 && existing.Sha == sha && !full)
+        {
+            touchFile.SetAll(revision, now, existing.Id).ExecuteNonQuery();
+            chunksWritten = 0;
+            return false;
+        }
+
+        var language = Chunker.LanguageFor(relativePath);
+        var chunks = Chunker.ChunkText(language, DecodeUtf8(bytes));
+
+        long fileId;
+        if (existing.Id != 0)
+        {
+            fileId = existing.Id;
+            updateFile.SetAll(language, sha, revision, now, fileId).ExecuteNonQuery();
+            deleteChunks.SetAll(fileId).ExecuteNonQuery();
+        }
+        else
+        {
+            fileId = (long)insertFile.SetAll(repo, relativePath, language, sha, revision, now).ExecuteScalar()!;
+        }
+
+        foreach (var chunk in chunks)
+            insertChunk.SetAll(fileId, chunk.Kind, chunk.Symbol, chunk.LineStart, chunk.LineEnd, chunk.Body)
+                .ExecuteNonQuery();
+
+        chunksWritten = chunks.Count;
+        return true;
+    }
+
+    private static int PruneDeletedFiles(SqliteConnection db, SqliteTransaction transaction, string repo,
+        HashSet<string> present, SqliteCommand deleteChunks, SqliteCommand deleteFile)
+    {
+        using var selectAll = db.Prepare("SELECT id, path FROM file WHERE repo = $repo", "$repo");
+        selectAll.Transaction = transaction;
+        var removed = 0;
+        foreach (var row in selectAll.SetAll(repo).Query(r => (Id: r.GetInt64(0), Path: r.GetString(1))))
+        {
+            if (present.Contains(row.Path)) continue;
+            deleteChunks.SetAll(row.Id).ExecuteNonQuery();
+            deleteFile.SetAll(row.Id).ExecuteNonQuery();
+            removed++;
+        }
+        return removed;
+    }
+
     /// <summary>Decode as UTF-8, tolerating the odd stray byte rather than failing the file.</summary>
     private static string DecodeUtf8(byte[] bytes) =>
         new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: false).GetString(bytes);
 
-    public static bool IsVendored(string path, IReadOnlySet<string>? vendoredDirs = null) =>
-        (vendoredDirs ?? Config.VendoredDirs).Contains(path.Split('/')[0]);
+    public static bool IsVendored(string path, IReadOnlySet<string>? vendoredDirs = null)
+    {
+        var sep = path.IndexOfAny(['/', '\\']);
+        var firstSegment = sep < 0 ? path : path[..sep];
+        return (vendoredDirs ?? Config.VendoredDirs).Contains(firstSegment);
+    }
 
     public static bool IsBinaryPath(string path, IReadOnlySet<string>? binaryExtensions = null)
     {

@@ -174,6 +174,14 @@ public static class Config
         }
         return Path.IsPathRooted(repoName) ? repoName : Path.Combine(repoRoot, repoName);
     }
+
+    /// <summary>
+    /// Resolve a cited repo-relative path to an OS-native filesystem path across Windows, macOS, and Linux.
+    /// </summary>
+    public static string ResolveCitedFilePath(string repoName, string repoRelativePath, string? repoRoot = null) =>
+        Path.Combine(
+            GetRepoDirectory(repoName, repoRoot),
+            repoRelativePath.Replace('\\', '/').Replace('/', Path.DirectorySeparatorChar));
 }
 
 /// <summary>Shape of <c>memory-bank.local.json</c>. Every field is optional.</summary>

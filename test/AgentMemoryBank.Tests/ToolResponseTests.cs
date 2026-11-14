@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AgentMemoryBank.Database;
 using AgentMemoryBank.Indexing;
 using AgentMemoryBank.McpServer;
@@ -166,5 +167,81 @@ public class ToolResponseTests
         Assert.True(rendered.IndexOf("Recorded knowledge", StringComparison.Ordinal) <
                     rendered.IndexOf("Indexed source", StringComparison.Ordinal),
             "notes should be rendered before the chunks that ground them");
+    }
+
+    [Fact]
+    public void HookRunner_ExtractIdentifiers_filters_stop_words_and_caps_at_three()
+    {
+        Assert.Empty(HookRunner.ExtractIdentifiers("please change the files and inspect behaviour"));
+        Assert.Equal(
+            ["wdl_spread", "memorysearch.search", "cache2"],
+            HookRunner.ExtractIdentifiers(
+                "Compare wdl_spread with MemorySearch.Search, cache2, wdl_spread, and ignored_fourth_key please."));
+    }
+
+    [Fact]
+    public void HookRunner_RunSessionStart_emits_json_for_latest_handoff_and_is_silent_when_missing()
+    {
+        using var repo = new TempRepo();
+
+        // Missing DB file must emit nothing and never create an empty database file.
+        var silent = new StringWriter();
+        Assert.Equal(0, HookRunner.RunSessionStart(repo.DbPath, silent));
+        Assert.Equal("", silent.ToString());
+        Assert.False(File.Exists(repo.DbPath));
+
+        using var db = MemoryDatabase.Open(repo.DbPath);
+        HandoffStore.Save(db, new SessionHandoffDraft
+        {
+            Agent = "codex",
+            Topic = "Refactor memory bank hooks",
+            Summary = "Moved hook logic into HookRunner.",
+            NextSteps = "Run full test suite.",
+        });
+
+        var output = new StringWriter();
+        Assert.Equal(0, HookRunner.RunSessionStart(repo.DbPath, output));
+
+        using var doc = JsonDocument.Parse(output.ToString().Trim());
+        var hook = doc.RootElement.GetProperty("hookSpecificOutput");
+        Assert.Equal("SessionStart", hook.GetProperty("hookEventName").GetString());
+        var ctx = hook.GetProperty("additionalContext").GetString()!;
+        Assert.Contains("Refactor memory bank hooks", ctx);
+        Assert.Contains("Moved hook logic into HookRunner.", ctx);
+    }
+
+    [Fact]
+    public void HookRunner_RunRecall_injects_strict_hits_only()
+    {
+        using var repo = new TempRepo();
+        using var db = IndexedStore(repo);
+        NoteStore.Add(db, new NoteDraft
+        {
+            Claim = "retry_jitter is fitted against p95 latency",
+            Evidence = "fixture/src/options.h:4",
+        }, repoRoot: repo.Root);
+
+        // Short prompt / malformed JSON / loosened-only match all emit nothing.
+        foreach (var payload in new[]
+        {
+            "{bad json",
+            """{"prompt":"short"}""",
+            """{"prompt":"inspect the retry_jitter and nonexistent_key_99 values"}""",
+        })
+        {
+            var silent = new StringWriter();
+            Assert.Equal(0, HookRunner.RunRecall(repo.DbPath, new StringReader(payload), silent));
+            Assert.Equal("", silent.ToString());
+        }
+
+        // Exact identifier hit emits UserPromptSubmit hook JSON with the matching note.
+        var output = new StringWriter();
+        var promptJson = """{"prompt":"Verify whether retry_jitter changed in recent commits"}""";
+        Assert.Equal(0, HookRunner.RunRecall(repo.DbPath, new StringReader(promptJson), output));
+
+        using var doc = JsonDocument.Parse(output.ToString().Trim());
+        var hook = doc.RootElement.GetProperty("hookSpecificOutput");
+        Assert.Equal("UserPromptSubmit", hook.GetProperty("hookEventName").GetString());
+        Assert.Contains("retry_jitter is fitted against p95 latency", hook.GetProperty("additionalContext").GetString());
     }
 }

@@ -161,4 +161,37 @@ public class UpsertAndIndexTests
         Assert.Equal("x/y.cs:1", outcome.Arguments["evidence"][0].GetString());
         Assert.Equal("hazard", outcome.Arguments["kinds"][0].GetString());
     }
+
+    [Fact]
+    public void CommandLine_distinguishes_explicit_limit_10_from_default()
+    {
+        var defaulted = CommandLine.Parse(["--settings", "custom.json"]);
+        Assert.Null(defaulted.LimitOption);
+        Assert.Equal(10, defaulted.Limit);
+        Assert.Equal("custom.json", defaulted.Settings);
+
+        var explicitTen = CommandLine.Parse(["--limit", "10", "--context", "{\"mode\":\"auto\"}"]);
+        Assert.Equal(10, explicitTen.LimitOption);
+        Assert.Equal(10, explicitTen.Limit);
+        Assert.Equal("{\"mode\":\"auto\"}", explicitTen.ContextData);
+    }
+
+    [Fact]
+    public void Verify_on_superseded_note_reports_replacement_and_live_head()
+    {
+        using var repo = new TempRepo();
+        using var db = Indexed(repo);
+
+        var first = NoteStore.Upsert(db, Draft(repo, "retry_backoff is fixed at 1.5f across runs"), repoRoot: repo.Root);
+        var second = NoteStore.Upsert(db, Draft(repo, "retry_backoff is fitted to p95 latency"),
+            supersedes: first.Id, repoRoot: repo.Root);
+        var third = NoteStore.Upsert(db, Draft(repo, Claim),
+            supersedes: second.Id, repoRoot: repo.Root);
+
+        var output = McpWriteTools.Verify(db, first.Id, repo.Root);
+
+        Assert.Contains($"Note {first.Id} was superseded by note {second.Id}", output);
+        Assert.Contains($"current live head: note {third.Id}", output);
+        Assert.DoesNotContain("Error: no note with id", output);
+    }
 }
