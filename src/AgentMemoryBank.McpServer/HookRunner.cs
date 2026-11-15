@@ -200,17 +200,23 @@ internal static partial class HookRunner
             }
 
             var window = ContextWindow(claudeDir);
-            var occupancy = Math.Round(100.0 * ClaudeTranscript.LastPromptTokens(transcript) / window, 1);
-            if (mode == AutoHandoffMode.Threshold && occupancy < percent)
-                return 0;
-
             var sessionId = JsonText(hook, "session_id") is { Length: > 0 } id ? id : "unknown";
             var stamp = Path.Combine(stateDir, SafeFileName(sessionId) + ".last");
-            if (mode == AutoHandoffMode.Threshold && File.Exists(stamp) &&
-                DateTime.UtcNow - File.GetLastWriteTimeUtc(stamp) < ThresholdRepeat)
-                return 0;
+
+            // Threshold mode runs on every prompt: the stamp settles most of them
+            // without touching the transcript, the usage scan most of the rest.
+            long? scannedTokens = null;
+            if (mode == AutoHandoffMode.Threshold)
+            {
+                if (File.Exists(stamp) && DateTime.UtcNow - File.GetLastWriteTimeUtc(stamp) < ThresholdRepeat)
+                    return 0;
+                scannedTokens = ClaudeTranscript.LastPromptTokens(transcript);
+                if (Occupancy(scannedTokens.Value, window) < percent)
+                    return 0;
+            }
 
             var snapshot = ClaudeTranscript.Read(transcript);
+            var occupancy = Occupancy(scannedTokens ?? snapshot.PromptTokens, window);
             var payloadCwd = JsonText(hook, "cwd");
             var sessionDir = new[] { payloadCwd, snapshot.Cwd }
                 .FirstOrDefault(dir => !string.IsNullOrWhiteSpace(dir) && Directory.Exists(dir));
@@ -287,6 +293,8 @@ internal static partial class HookRunner
         }
         return DefaultContextWindow;
     }
+
+    private static double Occupancy(long tokens, long window) => Math.Round(100.0 * tokens / window, 1);
 
     private static string Clip(string text, int max)
     {

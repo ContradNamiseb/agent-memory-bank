@@ -9,7 +9,8 @@ internal sealed record TranscriptSnapshot(
     string LastAssistantText,
     IReadOnlyList<string> EditedFiles,
     string? Branch,
-    string? Cwd);
+    string? Cwd,
+    long PromptTokens);
 
 /// <summary>
 /// Reads a Claude Code session transcript: one JSON record per line, written by
@@ -88,6 +89,7 @@ internal static partial class ClaudeTranscript
         var lastAssistant = "";
         string? branch = null;
         string? cwd = null;
+        long promptTokens = 0;
 
         foreach (var line in File.ReadLines(path))
         {
@@ -107,6 +109,9 @@ internal static partial class ClaudeTranscript
                     cwd = recordCwd;
                 if (Text(record, "gitBranch") is { Length: > 0 } recordBranch)
                     branch = recordBranch;
+                // The same rule as LastPromptTokens, so both modes report the same size.
+                if (PromptTokens(record) is { } tokens)
+                    promptTokens = tokens;
                 if (!record.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object)
                     continue;
 
@@ -142,7 +147,7 @@ internal static partial class ClaudeTranscript
             }
         }
 
-        return new TranscriptSnapshot(requests, lastAssistant, files, branch, cwd);
+        return new TranscriptSnapshot(requests, lastAssistant, files, branch, cwd, promptTokens);
     }
 
     /// <summary>

@@ -122,7 +122,11 @@ public class HandoffHookTests
         var above = WriteTranscript(repo, repo.RepoDirectory, promptTokens: 960, User("nearly full now"));
         payload = Payload(above, repo.RepoDirectory, "../../escape");
         Assert.Contains("Context at 96%", Run(repo, AutoHandoffMode.Threshold, payload));
-        Assert.Equal("", Run(repo, AutoHandoffMode.Threshold, payload));
+        // Inside the interval it stops at the stamp, before reading the transcript:
+        // held open exclusively here, a read would fail and be logged.
+        using (new FileStream(above, FileMode.Open, FileAccess.Read, FileShare.None))
+            Assert.Equal("", Run(repo, AutoHandoffMode.Threshold, payload));
+        Assert.DoesNotContain("error", File.ReadAllText(Path.Combine(repo.Root, "hook-state", "handoff.log")));
         Assert.Equal(1, Count(repo));
 
         var stamps = Directory.GetFiles(Path.Combine(repo.Root, "hook-state"), "*.last");
@@ -154,6 +158,8 @@ public class HandoffHookTests
 
         Assert.Equal(960, ClaudeTranscript.LastPromptTokens(transcript));
         Assert.Contains("Context at 96%", Run(repo, AutoHandoffMode.Threshold, Payload(transcript, repo.RepoDirectory, "s")));
+        // Force mode takes the size from the full read, by the same rule.
+        Assert.Contains("Context at 96%", Run(repo, AutoHandoffMode.Force, Payload(transcript, repo.RepoDirectory, "s")));
     }
 
     [Fact]
