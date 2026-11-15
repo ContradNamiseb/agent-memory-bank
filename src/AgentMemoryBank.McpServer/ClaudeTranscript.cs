@@ -23,7 +23,9 @@ internal static partial class ClaudeTranscript
 
     // Lines with the marker kept for parsing, newest last. More than one because
     // the newest need not be the client's own usage block (see LastPromptTokens).
-    private const int UsageCandidates = 16;
+    // The longest run of unusable ones measured in real transcripts is 8; past
+    // this many, the size reads as 0 and threshold mode does not fire.
+    private const int UsageCandidates = 64;
 
     private static readonly HashSet<string> EditTools = new(StringComparer.Ordinal) { "Edit", "Write", "NotebookEdit" };
 
