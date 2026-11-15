@@ -149,4 +149,221 @@ public sealed class GitCommitMinerTests
         Assert.Contains("git show abcdef1", draft.Evidence);
         Assert.Contains("src/loader/pool.cc", draft.Evidence);
     }
+
+    [Fact]
+    public void Superseding_a_mined_note_does_not_cause_next_mine_pass_to_remine_it()
+    {
+        var tempRoot = CreateTempDir();
+        try
+        {
+            var repoDir = Path.Combine(tempRoot, "alpha");
+            Directory.CreateDirectory(Path.Combine(repoDir, "src"));
+            GitProcess.Run(repoDir, "init");
+            GitProcess.Run(repoDir, "config", "user.email", "test@example.com");
+            GitProcess.Run(repoDir, "config", "user.name", "Test User");
+
+            File.WriteAllText(Path.Combine(repoDir, "src", "engine.cc"), "constexpr double kCpuctBase = 2800.0;\n");
+            GitProcess.Run(repoDir, "add", "src/engine.cc");
+            GitProcess.Run(repoDir, "commit",
+                "-m", "Adjust mcts_cpuct_base after deeper endgame sweep",
+                "-m", "Measured across 10k games; reduces tactical horizon drops.");
+
+            using var db = MemoryDatabase.Open(Path.Combine(tempRoot, "memory.db"));
+
+            var firstRun = GitCommitMiner.MineAll(db, tempRoot, ["alpha"], new GitMineOptions());
+            var firstResult = Assert.Single(firstRun.Results);
+            Assert.Null(firstResult.Error);
+            Assert.Equal(1, firstResult.CommitsExamined);
+            Assert.Equal(1, firstResult.NotesCreated);
+
+            var listed = NoteIndex.List(db, repo: "alpha");
+            var original = Assert.Single(listed.Entries);
+
+            var replacement = new NoteDraft
+            {
+                Claim = "mcts_cpuct_base updated to 2900 after follow-up validation",
+                Evidence = "alpha/src/engine.cc:1",
+                Tags = ["alpha"],
+            };
+            var superseded = NoteStore.Supersede(db, original.Id, replacement, why: "re-calibrated", repoRoot: tempRoot);
+            Assert.IsType<NoteWriteResult.Accepted>(superseded);
+            Assert.NotNull(MemorySearch.GetNote(db, original.Id)?.SupersededBy);
+
+            var secondRun = GitCommitMiner.MineAll(db, tempRoot, ["alpha"], new GitMineOptions());
+            var secondResult = Assert.Single(secondRun.Results);
+            Assert.Null(secondResult.Error);
+            Assert.Equal(1, secondResult.CommitsExamined);
+            Assert.Equal(0, secondResult.NotesCreated);
+            Assert.Equal(1, secondResult.NotesSkipped);
+        }
+        finally
+        {
+            DeleteTempDir(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void Repo_scoped_search_includes_mined_and_unattributed_notes_and_excludes_other_repos()
+    {
+        var tempRoot = CreateTempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(tempRoot, "beta", "src"));
+            File.WriteAllText(Path.Combine(tempRoot, "beta", "src", "cache.cc"), "constexpr int kProbeCacheCap = 64;\n");
+
+            using var db = MemoryDatabase.Open(Path.Combine(tempRoot, "memory.db"));
+            SeedRun(db, 1);
+
+            var alphaDraft = GitCommitMiner.BuildDraft("alpha", new MinedCommit
+            {
+                Sha = "aaaaaaa111111111111111111111111111111111",
+                ShortSha = "aaaaaaa",
+                Author = "Alice",
+                Date = DateTimeOffset.UtcNow,
+                Subject = "Tune probe_shared_key in alpha pool allocator",
+                Body = "Cuts peak RSS by 18% on large batches.",
+                Files = ["src/pool.cc"],
+            }, runId: 1);
+            var alphaId = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, alphaDraft, tempRoot)).Id;
+
+            var betaDraft = GitCommitMiner.BuildDraft("beta", new MinedCommit
+            {
+                Sha = "bbbbbbb222222222222222222222222222222222",
+                ShortSha = "bbbbbbb",
+                Author = "Bob",
+                Date = DateTimeOffset.UtcNow,
+                Subject = "Tune probe_shared_key in beta network loader",
+                Body = "Avoids redundant tensor staging copies.",
+                Files = ["src/loader.cc"],
+            }, runId: 1);
+            var betaMinedId = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, betaDraft, tempRoot)).Id;
+
+            var betaFileId = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, new NoteDraft
+            {
+                Claim = "probe_shared_key in beta cache uses fixed 64-entry ring",
+                Evidence = "beta/src/cache.cc:1",
+                Tags = ["beta"],
+            }, tempRoot)).Id;
+
+            var unattributedId = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, new NoteDraft
+            {
+                Claim = "probe_shared_key cross-repo benchmark baseline is 12.4ms",
+                Evidence = "python bench_suite.py --filter probe_shared_key -> 12.4ms p99",
+                Tags = ["benchmark"],
+            }, tempRoot)).Id;
+
+            var alphaHits = MemorySearch.Search(db, "probe_shared_key", repo: "alpha", notesOnly: true).Notes
+                .Select(n => n.Id)
+                .ToHashSet();
+
+            Assert.Contains(alphaId, alphaHits);
+            Assert.Contains(unattributedId, alphaHits);
+            Assert.DoesNotContain(betaMinedId, alphaHits);
+            Assert.DoesNotContain(betaFileId, alphaHits);
+
+            var repos = NoteIndex.Repos(db);
+            Assert.Contains("alpha", repos);
+            Assert.Contains("beta", repos);
+        }
+        finally
+        {
+            DeleteTempDir(tempRoot);
+        }
+    }
+
+    [Fact]
+    public void NoteIndex_list_with_repo_filter_includes_mined_notes_without_false_substring_matches()
+    {
+        var tempRoot = CreateTempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(tempRoot, "alpha", "src"));
+            Directory.CreateDirectory(Path.Combine(tempRoot, "alpha-v2", "src"));
+            File.WriteAllText(Path.Combine(tempRoot, "alpha", "src", "cfg.cc"), "constexpr int kAlphaCfg = 1;\n");
+            File.WriteAllText(Path.Combine(tempRoot, "alpha-v2", "src", "cfg.cc"), "constexpr int kAlphaV2Cfg = 2;\n");
+
+            using var db = MemoryDatabase.Open(Path.Combine(tempRoot, "memory.db"));
+            SeedRun(db, 1);
+
+            var alphaMined = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, GitCommitMiner.BuildDraft("alpha", new MinedCommit
+            {
+                Sha = "1111111aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                ShortSha = "1111111",
+                Author = "Alice",
+                Date = DateTimeOffset.UtcNow,
+                Subject = "Set alpha queue watermark for steady throughput",
+                Body = "Prevents stall bursts under sustained load.",
+                Files = ["src/queue.cc"],
+            }, runId: 1), tempRoot)).Id;
+
+            var alphaManual = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, new NoteDraft
+            {
+                Claim = "alpha configuration defaults to kAlphaCfg = 1",
+                Evidence = "alpha/src/cfg.cc:1",
+                Tags = ["alpha"],
+            }, tempRoot)).Id;
+
+            var alphaV2Mined = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, GitCommitMiner.BuildDraft("alpha-v2", new MinedCommit
+            {
+                Sha = "2222222bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                ShortSha = "2222222",
+                Author = "Bob",
+                Date = DateTimeOffset.UtcNow,
+                Subject = "Set alpha-v2 queue watermark independently",
+                Body = "Higher batch ceiling for v2 pipeline.",
+                Files = ["src/queue.cc"],
+            }, runId: 1), tempRoot)).Id;
+
+            var alphaV2Manual = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, new NoteDraft
+            {
+                Claim = "alpha-v2 configuration defaults to kAlphaV2Cfg = 2",
+                Evidence = "alpha-v2/src/cfg.cc:1",
+                Tags = ["alpha-v2"],
+            }, tempRoot)).Id;
+
+            var unattributed = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, new NoteDraft
+            {
+                Claim = "shared timing measurement across builds is 42ms",
+                Evidence = "dotnet test --filter TimingProbe -> 42ms",
+                Tags = ["timing"],
+            }, tempRoot)).Id;
+
+            var (entries, total) = NoteIndex.List(db, repo: "alpha");
+            var ids = entries.Select(e => e.Id).ToHashSet();
+
+            Assert.Equal(2, total);
+            Assert.Contains(alphaMined, ids);
+            Assert.Contains(alphaManual, ids);
+            Assert.DoesNotContain(alphaV2Mined, ids);
+            Assert.DoesNotContain(alphaV2Manual, ids);
+            Assert.DoesNotContain(unattributed, ids);
+        }
+        finally
+        {
+            DeleteTempDir(tempRoot);
+        }
+    }
+
+    private static void SeedRun(Microsoft.Data.Sqlite.SqliteConnection db, long runId = 1)
+    {
+        using var cmd = db.CreateCommand();
+        cmd.CommandText = "INSERT INTO run(id, started_at, tool) VALUES ($id, datetime('now'), 'git-mine')";
+        cmd.Parameters.AddWithValue("$id", runId);
+        cmd.ExecuteNonQuery();
+    }
+
+    private static string CreateTempDir()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "amb-gitminer-tests-" + Guid.NewGuid().ToString("N")[..8]);
+        Directory.CreateDirectory(path);
+        return path;
+    }
+
+    private static void DeleteTempDir(string path)
+    {
+        if (!Directory.Exists(path)) return;
+        foreach (var file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            File.SetAttributes(file, FileAttributes.Normal);
+        Directory.Delete(path, recursive: true);
+    }
 }

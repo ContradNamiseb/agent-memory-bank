@@ -249,8 +249,8 @@ public static class NoteStore
             : new UpsertOutcome(UpsertAction.Rejected, 0, null, written);
     }
 
-    /// <summary>The live end of a supersede chain, as "note N", or a statement that the chain is broken.</summary>
-    public static string LiveHead(SqliteConnection db, long id)
+    /// <summary>The live end of a supersede chain, plus whether the 100-hop cap was reached.</summary>
+    public static (long HeadId, bool Truncated) LiveHeadId(SqliteConnection db, long id)
     {
         using var next = db.Prepare("SELECT superseded_by FROM note WHERE id = $id", "$id");
         var current = id;
@@ -259,10 +259,26 @@ public static class NoteStore
             var successor = next.SetAll(current)
                 .Query(r => r.IsDBNull(0) ? (long?)null : r.GetInt64(0))
                 .FirstOrDefault();
-            if (successor is null) return $"note {current}";
+            if (successor is null) return (current, false);
             current = successor.Value;
         }
-        return $"note {current} (chain longer than 100 hops)";
+        return (current, true);
+    }
+
+    /// <summary>The live end of a supersede chain, as "note N", or a statement that the chain is broken.</summary>
+    public static string LiveHead(SqliteConnection db, long id)
+    {
+        var (headId, truncated) = LiveHeadId(db, id);
+        return truncated ? $"note {headId} (chain longer than 100 hops)" : $"note {headId}";
+    }
+
+    /// <summary>Describe what superseded a note, including the live head when chained further.</summary>
+    public static string DescribeSupersedeChain(SqliteConnection db, long id, long supersededBy)
+    {
+        var (headId, _) = LiveHeadId(db, id);
+        return headId == supersededBy
+            ? $"note {supersededBy}"
+            : $"note {supersededBy} (current live head: {LiveHead(db, id)})";
     }
 
     /// <summary>"note ids run #1–#2700; nearest live: #2698 #2701" — what an unknown id was probably meant to be.</summary>
@@ -309,7 +325,7 @@ public static class NoteStore
     public static (long Id, string Claim)? FindSimilar(SqliteConnection db, string claim,
         double threshold = 0.5)
     {
-        var terms = ClaimValidator.SignificantTerms(claim);
+        var terms = SignificantTerms(claim);
         if (terms.Count < 3) return null;
 
         try
@@ -326,7 +342,7 @@ public static class NoteStore
 
             foreach (var candidate in candidates)
             {
-                var other = ClaimValidator.SignificantTerms(candidate.Claim);
+                var other = SignificantTerms(candidate.Claim);
                 if (other.Count == 0) continue;
                 var shared = terms.Intersect(other).Count();
                 // Jaccard against the smaller set: a short claim fully contained in a
@@ -341,6 +357,13 @@ public static class NoteStore
         }
         return null;
     }
+
+    /// <summary>Content words of a claim, lowercased: long enough to carry meaning.</summary>
+    private static HashSet<string> SignificantTerms(string text) =>
+        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Select(t => new string(t.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant())
+            .Where(t => t.Length >= 4)
+            .ToHashSet();
 
     private static long? FindDuplicate(SqliteConnection db, string claim)
     {

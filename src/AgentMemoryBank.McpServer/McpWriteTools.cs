@@ -146,8 +146,7 @@ public sealed class McpWriteTools
 
             if (MemorySearch.GetNote(db, id.Value)?.SupersededBy is { } by)
             {
-                var head = NoteStore.LiveHead(db, id.Value);
-                var chain = head == $"note {by}" ? head : $"note {by} (current live head: {head})";
+                var chain = NoteStore.DescribeSupersedeChain(db, id.Value, by);
                 return $"Note {id.Value} was superseded by {chain}, so it is no longer verified.";
             }
 

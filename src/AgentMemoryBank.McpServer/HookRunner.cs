@@ -1,4 +1,3 @@
-using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -56,7 +55,7 @@ internal static partial class HookRunner
             if (latest is null)
                 return 0;
 
-            WriteHookOutput(stdout, "SessionStart", SessionStartHeader, FormatHandoff(latest));
+            WriteHookOutput(stdout, "SessionStart", SessionStartHeader, ToolResponses.FormatHandoff(latest));
         }
         catch
         {
@@ -97,7 +96,7 @@ internal static partial class HookRunner
             if (result.Notes.Count == 0 || result.Mode == MatchMode.Loosened)
                 return 0;
 
-            WriteHookOutput(stdout, "UserPromptSubmit", RecallHeader, FormatNoteHits(result.Notes));
+            WriteHookOutput(stdout, "UserPromptSubmit", RecallHeader, ToolResponses.FormatNoteHits(result.Notes));
         }
         catch
         {
@@ -133,47 +132,6 @@ internal static partial class HookRunner
         }
 
         return keys;
-    }
-
-    internal static string FormatHandoff(SessionHandoff h)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine($"=== Session Handoff #{h.Id} ({h.Agent}) ===");
-        sb.AppendLine($"Topic:   {h.Topic}");
-        sb.AppendLine($"Created: {h.CreatedAt}");
-        if (!string.IsNullOrWhiteSpace(h.ActiveFiles))
-            sb.AppendLine($"Files:   {h.ActiveFiles}");
-        sb.AppendLine();
-        sb.AppendLine("--- Summary ---");
-        sb.AppendLine(h.Summary);
-        sb.AppendLine();
-        sb.AppendLine("--- Next Steps ---");
-        sb.AppendLine(h.NextSteps);
-        if (!string.IsNullOrWhiteSpace(h.OpenQuestions))
-        {
-            sb.AppendLine();
-            sb.AppendLine("--- Open Questions ---");
-            sb.AppendLine(h.OpenQuestions);
-        }
-        return sb.ToString().TrimEnd();
-    }
-
-    internal static string FormatNoteHits(IReadOnlyList<NoteHit> notes)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine($"notes ({notes.Count}):");
-        foreach (var note in notes)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"  [note {note.Id}] {note.Kind?.ToString().ToLowerInvariant() ?? "-"} / " +
-                          $"{note.Confidence?.ToString().ToLowerInvariant() ?? "-"}  score {note.Score:F2}");
-            sb.AppendLine($"  {note.Claim}");
-            if (note.Evidence is not null)
-                sb.AppendLine($"  evidence: {note.Evidence}");
-            if (note.VerifiedAt is not null)
-                sb.AppendLine($"  verified: {note.VerifiedAt}");
-        }
-        return sb.ToString().TrimEnd();
     }
 
     private static bool IsIdentifierShaped(string word)

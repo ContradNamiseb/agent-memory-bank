@@ -102,29 +102,7 @@ public static class Indexer
         var present = new HashSet<string>(paths, StringComparer.Ordinal);
 
         using var transaction = db.BeginTransaction();
-
-        using var selectFile = db.Prepare(
-            "SELECT id, content_sha FROM file WHERE repo = $repo AND path = $path", "$repo", "$path");
-        using var insertFile = db.Prepare("""
-            INSERT INTO file(repo, path, lang, content_sha, git_rev, indexed_at)
-            VALUES ($repo, $path, $lang, $sha, $rev, $at)
-            RETURNING id
-            """, "$repo", "$path", "$lang", "$sha", "$rev", "$at");
-        using var updateFile = db.Prepare("""
-            UPDATE file SET lang = $lang, content_sha = $sha, git_rev = $rev, indexed_at = $at
-            WHERE id = $id
-            """, "$lang", "$sha", "$rev", "$at", "$id");
-        using var touchFile = db.Prepare(
-            "UPDATE file SET git_rev = $rev, indexed_at = $at WHERE id = $id", "$rev", "$at", "$id");
-        using var deleteChunks = db.Prepare("DELETE FROM chunk WHERE file_id = $id", "$id");
-        using var deleteFile = db.Prepare("DELETE FROM file WHERE id = $id", "$id");
-        using var insertChunk = db.Prepare("""
-            INSERT INTO chunk(file_id, kind, symbol, line_start, line_end, body)
-            VALUES ($file, $kind, $symbol, $start, $end, $body)
-            """, "$file", "$kind", "$symbol", "$start", "$end", "$body");
-
-        foreach (var command in new[] { selectFile, insertFile, updateFile, touchFile, deleteChunks, deleteFile, insertChunk })
-            command.Transaction = transaction;
+        using var cmds = new RepoIndexCommands(db, transaction);
 
         foreach (var relativePath in paths)
         {
@@ -135,8 +113,7 @@ public static class Indexer
                 continue;
             }
 
-            if (!UpsertIndexedFile(selectFile, insertFile, updateFile, touchFile, deleteChunks, insertChunk,
-                    repo, relativePath, bytes, revision, now, full, out var chunksWritten))
+            if (!UpsertIndexedFile(cmds, repo, relativePath, bytes, revision, now, full, out var chunksWritten))
             {
                 skipped++;
                 continue;
@@ -148,7 +125,7 @@ public static class Indexer
         }
 
         // Files that left the repository must leave the index too.
-        removed = PruneDeletedFiles(db, transaction, repo, present, deleteChunks, deleteFile);
+        removed = PruneDeletedFiles(cmds, repo, present);
 
         transaction.Commit();
 
@@ -162,6 +139,57 @@ public static class Indexer
             GitRev = revision,
             FileErrors = fileErrors,
         };
+    }
+
+    private sealed class RepoIndexCommands : IDisposable
+    {
+        public SqliteCommand SelectFile { get; }
+        public SqliteCommand InsertFile { get; }
+        public SqliteCommand UpdateFile { get; }
+        public SqliteCommand TouchFile { get; }
+        public SqliteCommand DeleteChunks { get; }
+        public SqliteCommand DeleteFile { get; }
+        public SqliteCommand InsertChunk { get; }
+        public SqliteCommand SelectAllFiles { get; }
+
+        public RepoIndexCommands(SqliteConnection db, SqliteTransaction transaction)
+        {
+            SelectFile = db.Prepare(
+                "SELECT id, content_sha FROM file WHERE repo = $repo AND path = $path", "$repo", "$path");
+            InsertFile = db.Prepare("""
+                INSERT INTO file(repo, path, lang, content_sha, git_rev, indexed_at)
+                VALUES ($repo, $path, $lang, $sha, $rev, $at)
+                RETURNING id
+                """, "$repo", "$path", "$lang", "$sha", "$rev", "$at");
+            UpdateFile = db.Prepare("""
+                UPDATE file SET lang = $lang, content_sha = $sha, git_rev = $rev, indexed_at = $at
+                WHERE id = $id
+                """, "$lang", "$sha", "$rev", "$at", "$id");
+            TouchFile = db.Prepare(
+                "UPDATE file SET git_rev = $rev, indexed_at = $at WHERE id = $id", "$rev", "$at", "$id");
+            DeleteChunks = db.Prepare("DELETE FROM chunk WHERE file_id = $id", "$id");
+            DeleteFile = db.Prepare("DELETE FROM file WHERE id = $id", "$id");
+            InsertChunk = db.Prepare("""
+                INSERT INTO chunk(file_id, kind, symbol, line_start, line_end, body)
+                VALUES ($file, $kind, $symbol, $start, $end, $body)
+                """, "$file", "$kind", "$symbol", "$start", "$end", "$body");
+            SelectAllFiles = db.Prepare("SELECT id, path FROM file WHERE repo = $repo", "$repo");
+
+            foreach (var command in new[] { SelectFile, InsertFile, UpdateFile, TouchFile, DeleteChunks, DeleteFile, InsertChunk, SelectAllFiles })
+                command.Transaction = transaction;
+        }
+
+        public void Dispose()
+        {
+            SelectFile.Dispose();
+            InsertFile.Dispose();
+            UpdateFile.Dispose();
+            TouchFile.Dispose();
+            DeleteChunks.Dispose();
+            DeleteFile.Dispose();
+            InsertChunk.Dispose();
+            SelectAllFiles.Dispose();
+        }
     }
 
     private static bool TryReadSourceBytes(string repoDirectory, string relativePath, long maxFileBytes,
@@ -196,20 +224,17 @@ public static class Indexer
         return true;
     }
 
-    private static bool UpsertIndexedFile(
-        SqliteCommand selectFile, SqliteCommand insertFile, SqliteCommand updateFile,
-        SqliteCommand touchFile, SqliteCommand deleteChunks, SqliteCommand insertChunk,
-        string repo, string relativePath, byte[] bytes, string? revision, string now,
-        bool full, out int chunksWritten)
+    private static bool UpsertIndexedFile(RepoIndexCommands cmds, string repo, string relativePath,
+        byte[] bytes, string? revision, string now, bool full, out int chunksWritten)
     {
         var sha = Convert.ToHexStringLower(SHA256.HashData(bytes));
-        var existing = selectFile.SetAll(repo, relativePath)
+        var existing = cmds.SelectFile.SetAll(repo, relativePath)
             .Query(r => (Id: r.GetInt64(0), Sha: r.GetString(1)))
             .FirstOrDefault();
 
         if (existing.Id != 0 && existing.Sha == sha && !full)
         {
-            touchFile.SetAll(revision, now, existing.Id).ExecuteNonQuery();
+            cmds.TouchFile.SetAll(revision, now, existing.Id).ExecuteNonQuery();
             chunksWritten = 0;
             return false;
         }
@@ -221,33 +246,30 @@ public static class Indexer
         if (existing.Id != 0)
         {
             fileId = existing.Id;
-            updateFile.SetAll(language, sha, revision, now, fileId).ExecuteNonQuery();
-            deleteChunks.SetAll(fileId).ExecuteNonQuery();
+            cmds.UpdateFile.SetAll(language, sha, revision, now, fileId).ExecuteNonQuery();
+            cmds.DeleteChunks.SetAll(fileId).ExecuteNonQuery();
         }
         else
         {
-            fileId = (long)insertFile.SetAll(repo, relativePath, language, sha, revision, now).ExecuteScalar()!;
+            fileId = (long)cmds.InsertFile.SetAll(repo, relativePath, language, sha, revision, now).ExecuteScalar()!;
         }
 
         foreach (var chunk in chunks)
-            insertChunk.SetAll(fileId, chunk.Kind, chunk.Symbol, chunk.LineStart, chunk.LineEnd, chunk.Body)
+            cmds.InsertChunk.SetAll(fileId, chunk.Kind, chunk.Symbol, chunk.LineStart, chunk.LineEnd, chunk.Body)
                 .ExecuteNonQuery();
 
         chunksWritten = chunks.Count;
         return true;
     }
 
-    private static int PruneDeletedFiles(SqliteConnection db, SqliteTransaction transaction, string repo,
-        HashSet<string> present, SqliteCommand deleteChunks, SqliteCommand deleteFile)
+    private static int PruneDeletedFiles(RepoIndexCommands cmds, string repo, HashSet<string> present)
     {
-        using var selectAll = db.Prepare("SELECT id, path FROM file WHERE repo = $repo", "$repo");
-        selectAll.Transaction = transaction;
         var removed = 0;
-        foreach (var row in selectAll.SetAll(repo).Query(r => (Id: r.GetInt64(0), Path: r.GetString(1))))
+        foreach (var row in cmds.SelectAllFiles.SetAll(repo).Query(r => (Id: r.GetInt64(0), Path: r.GetString(1))))
         {
             if (present.Contains(row.Path)) continue;
-            deleteChunks.SetAll(row.Id).ExecuteNonQuery();
-            deleteFile.SetAll(row.Id).ExecuteNonQuery();
+            cmds.DeleteChunks.SetAll(row.Id).ExecuteNonQuery();
+            cmds.DeleteFile.SetAll(row.Id).ExecuteNonQuery();
             removed++;
         }
         return removed;

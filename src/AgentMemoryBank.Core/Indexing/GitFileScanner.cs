@@ -1,6 +1,3 @@
-using System.Diagnostics;
-using System.Text;
-
 namespace AgentMemoryBank.Indexing;
 
 /// <summary>
@@ -19,7 +16,7 @@ public static class GitFileScanner
     {
         try
         {
-            return RunGit(repoDirectory, "rev-parse", "HEAD").Trim();
+            return GitProcess.Run(repoDirectory, "rev-parse", "HEAD").Trim();
         }
         catch (InvalidOperationException)
         {
@@ -29,31 +26,6 @@ public static class GitFileScanner
 
     /// <summary>Tracked paths, repo-relative, using forward slashes as git reports them.</summary>
     public static IReadOnlyList<string> ListFiles(string repoDirectory) =>
-        RunGit(repoDirectory, "ls-files", "-z")
+        GitProcess.Run(repoDirectory, "ls-files", "-z")
             .Split('\0', StringSplitOptions.RemoveEmptyEntries);
-
-    /// <summary>Run git inside a repository working directory, capturing UTF-8 stdout.</summary>
-    public static string RunGit(string workingDirectory, params string[] arguments)
-    {
-        var info = new ProcessStartInfo("git")
-        {
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            StandardOutputEncoding = Encoding.UTF8,
-        };
-        foreach (var argument in arguments) info.ArgumentList.Add(argument);
-
-        using var process = Process.Start(info)
-            ?? throw new InvalidOperationException("could not start git");
-        var stdout = process.StandardOutput.ReadToEnd();
-        var stderr = process.StandardError.ReadToEnd();
-        process.WaitForExit();
-
-        if (process.ExitCode != 0)
-            throw new InvalidOperationException(
-                $"git {string.Join(' ', arguments)} failed in {workingDirectory}: {stderr.Trim()}");
-        return stdout;
-    }
 }

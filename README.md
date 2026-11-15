@@ -147,8 +147,9 @@ quickest way to confirm the store holds what you think it does:
 ### 4. Wire it into your agent
 
 The server speaks MCP over stdio, so any client that can launch a command can
-use it. Give each one the **absolute** path to the published executable and the
-single argument `serve`.
+use it. Give each one the **absolute** path to the published executable and
+`serve` (optionally `--db PATH` and `--settings PATH`; unknown options are
+rejected).
 
 The examples below use a Windows path. On Linux and macOS use the extensionless
 `agent-memory-bank` instead, or set `"command": "dotnet"` with

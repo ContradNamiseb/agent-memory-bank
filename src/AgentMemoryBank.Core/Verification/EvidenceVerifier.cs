@@ -168,13 +168,6 @@ public static class EvidenceVerifier
             $"{citation.Path} changed and the note has no anchor to re-locate it by.", citation, citation.Line);
     }
 
-    /// <summary>Pick the line worth anchoring to. Delegates to <see cref="AnchorSelector.ChooseAnchorText"/>.</summary>
-    public static string? ChooseAnchorText(IReadOnlyList<string> fileLines, int citedLine, int window = 2) =>
-        AnchorSelector.ChooseAnchorText(fileLines, citedLine, window);
-
-    /// <summary>Collapse whitespace before comparing. Delegates to <see cref="AnchorSelector.Normalise"/>.</summary>
-    public static string Normalise(string line) => AnchorSelector.Normalise(line);
-
     private static void Touch(SqliteConnection db, long noteId)
     {
         using var cmd = db.Prepare("UPDATE note SET verified_at = $at WHERE id = $id", "$at", "$id");

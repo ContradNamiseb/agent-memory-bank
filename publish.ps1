@@ -49,6 +49,11 @@ if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed with exit code $LASTEXIT
 & (Join-Path $target $Exe) help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "$Exe help failed in $target; publish/ was not changed" }
 
+$hooksSrc = Join-Path $Root 'hooks'
+if (Test-Path $hooksSrc) {
+    Copy-Item -LiteralPath $hooksSrc -Destination (Join-Path $target 'hooks') -Recurse -Force
+}
+
 $isWinHost = $IsWindows -or ($env:OS -eq 'Windows_NT')
 $linkType = if ($isWinHost) { 'Junction' } else { 'SymbolicLink' }
 $link = Join-Path $Root 'publish'
@@ -65,22 +70,30 @@ New-Item -ItemType $linkType -Path $link -Target $target | Out-Null
 # refuses an exclusive open of a loaded exe or dll. Checking only the exe is not
 # enough (see the caveat above).
 function Test-InUse([string]$dir) {
-    foreach ($file in Get-ChildItem -LiteralPath $dir -Recurse -File -Include *.exe, *.dll) {
-        try { [IO.File]::Open($file.FullName, 'Open', 'ReadWrite', 'None').Dispose() } catch { return $true }
+    if ($isWinHost) {
+        foreach ($file in Get-ChildItem -LiteralPath $dir -Recurse -File -Include *.exe, *.dll) {
+            try { [IO.File]::Open($file.FullName, 'Open', 'ReadWrite', 'None').Dispose() } catch { return $true }
+        }
+        return $false
+    }
+
+    if (Get-Command lsof -ErrorAction SilentlyContinue) {
+        & lsof +D $dir 2>$null | Out-Null
+        return ($LASTEXITCODE -eq 0)
     }
     return $false
 }
 
 Get-ChildItem -LiteralPath $releases -Directory |
-    Where-Object FullName -ne $target |
-    Sort-Object CreationTime -Descending |
+    Where-Object { $_.FullName -ne $target -and $_.Name -match '^\d{8}-\d{6}$' } |
+    Sort-Object Name -Descending |
     Select-Object -Skip $Keep |
     ForEach-Object {
-        if (Test-InUse $_.FullName) { "kept releases\$($_.Name): a running server still uses it"; return }
+        if (Test-InUse $_.FullName) { "kept releases/$($_.Name): a running server still uses it"; return }
         try {
             Remove-Item -LiteralPath $_.FullName -Recurse -Force
-            "removed releases\$($_.Name)"
+            "removed releases/$($_.Name)"
         } catch {
-            "could not fully remove releases\$($_.Name) (a server started using it mid-check?): $($_.Exception.Message)"
+            "could not fully remove releases/$($_.Name) (a server started using it mid-check?): $($_.Exception.Message)"
         }
     }

@@ -23,10 +23,26 @@ public static class ToolResponses
         Render(result, db, maxChars);
 
     /// <summary>One chunk in full, with line numbers so any line can be cited.</summary>
-    public static string RenderChunkById(SqliteConnection db, long id) => RenderChunk(db, id);
+    public static string RenderChunkById(SqliteConnection db, long id)
+    {
+        TryRenderChunkById(db, id, out var text);
+        return text;
+    }
+
+    /// <summary>Try to render one chunk by id, returning false when not found.</summary>
+    public static bool TryRenderChunkById(SqliteConnection db, long id, out string text) =>
+        RenderChunk(db, id, out text);
 
     /// <summary>One note in full, including whether its evidence was ever re-verified.</summary>
-    public static string RenderNoteById(SqliteConnection db, long id) => RenderNote(db, id);
+    public static string RenderNoteById(SqliteConnection db, long id)
+    {
+        TryRenderNoteById(db, id, out var text);
+        return text;
+    }
+
+    /// <summary>Try to render one note by id, returning false when not found.</summary>
+    public static bool TryRenderNoteById(SqliteConnection db, long id, out string text) =>
+        RenderNote(db, id, out text);
 
     /// <summary>What the store holds, and whether an empty search means anything.</summary>
     public static string RenderStats(SqliteConnection db)
@@ -118,12 +134,15 @@ public static class ToolResponses
         return text.ToString().TrimEnd();
     }
 
-    private static string RenderChunk(SqliteConnection db, long id)
+    private static bool RenderChunk(SqliteConnection db, long id, out string rendered)
     {
         var found = MemorySearch.GetChunk(db, id);
         if (found is null)
-            return $"Error: no chunk with id {id}; chunk ids run #1–#{db.Scalar<long>("SELECT COALESCE(MAX(id), 0) FROM chunk")}. " +
-                   "Chunk ids come from memory_search results.";
+        {
+            rendered = $"Error: no chunk with id {id}; chunk ids run #1–#{db.Scalar<long>("SELECT COALESCE(MAX(id), 0) FROM chunk")}. " +
+                       "Chunk ids come from memory_search results.";
+            return false;
+        }
 
         var (chunk, repo, path, gitRev) = found.Value;
         var text = new StringBuilder();
@@ -135,13 +154,18 @@ public static class ToolResponses
         var lines = chunk.Body.Split('\n');
         for (var i = 0; i < lines.Length; i++)
             text.AppendLine($"{chunk.LineStart + i,6}| {lines[i]}");
-        return text.ToString().TrimEnd();
+        rendered = text.ToString().TrimEnd();
+        return true;
     }
 
-    private static string RenderNote(SqliteConnection db, long id)
+    private static bool RenderNote(SqliteConnection db, long id, out string rendered)
     {
         var note = MemorySearch.GetNote(db, id);
-        if (note is null) return $"Error: no note with id {id}; {NoteStore.IdHint(db, id)}.";
+        if (note is null)
+        {
+            rendered = $"Error: no note with id {id}; {NoteStore.IdHint(db, id)}.";
+            return false;
+        }
 
         var text = new StringBuilder();
         text.AppendLine($"[note {id}] {note.Claim}");
@@ -154,7 +178,54 @@ public static class ToolResponses
         text.AppendLine(note.VerifiedAt is null
             ? "\nThis note's evidence has never been re-verified; the cited code may have moved."
             : $"\nEvidence last verified: {note.VerifiedAt}");
-        return text.ToString().TrimEnd();
+        rendered = text.ToString().TrimEnd();
+        return true;
+    }
+
+    internal static string FormatHandoff(SessionHandoff h)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"=== Session Handoff #{h.Id} ({h.Agent}) ===");
+        sb.AppendLine($"Topic:   {h.Topic}");
+        sb.AppendLine($"Created: {h.CreatedAt}");
+        if (!string.IsNullOrWhiteSpace(h.ActiveFiles))
+            sb.AppendLine($"Files:   {h.ActiveFiles}");
+        sb.AppendLine();
+        sb.AppendLine("--- Summary ---");
+        sb.AppendLine(h.Summary);
+        sb.AppendLine();
+        sb.AppendLine("--- Next Steps ---");
+        sb.AppendLine(h.NextSteps);
+        if (!string.IsNullOrWhiteSpace(h.OpenQuestions))
+        {
+            sb.AppendLine();
+            sb.AppendLine("--- Open Questions ---");
+            sb.AppendLine(h.OpenQuestions);
+        }
+        if (!string.IsNullOrWhiteSpace(h.ContextData))
+        {
+            sb.AppendLine();
+            sb.AppendLine("--- Context ---");
+            sb.AppendLine(h.ContextData);
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    internal static string FormatNoteHits(IReadOnlyList<NoteHit> notes)
+    {
+        var sb = new StringBuilder();
+        sb.AppendLine($"notes ({notes.Count}):");
+        foreach (var note in notes)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"  [note {note.Id}] {Lower(note.Kind)} / {Lower(note.Confidence)}  score {note.Score:F2}");
+            sb.AppendLine($"  {note.Claim}");
+            if (note.Evidence is not null)
+                sb.AppendLine($"  evidence: {note.Evidence}");
+            if (note.VerifiedAt is not null)
+                sb.AppendLine($"  verified: {note.VerifiedAt}");
+        }
+        return sb.ToString().TrimEnd();
     }
 
     /// <summary>

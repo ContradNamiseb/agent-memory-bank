@@ -47,15 +47,21 @@ public static class Config
         ?? Settings.DbPath
         ?? Path.Combine(ProjectRoot, "memory.db");
 
+    private static readonly IReadOnlySet<string> DefaultVendoredDirs =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "vendor", "third_party", "external", "libs", "subprojects", "node_modules",
+        };
+
     /// <summary>
     /// Directory names skipped wherever they appear as the first path segment.
     /// Vendored third-party trees are noise: they are someone else's code, they
     /// dwarf the repository that contains them, and nothing in them is a finding.
     /// </summary>
     public static IReadOnlySet<string> VendoredDirs =>
-        new HashSet<string>(
-            Settings.VendoredDirs ?? ["vendor", "third_party", "external", "libs", "subprojects", "node_modules"],
-            StringComparer.OrdinalIgnoreCase);
+        Settings.VendoredDirs is null
+            ? DefaultVendoredDirs
+            : new HashSet<string>(Settings.VendoredDirs, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Files larger than this are not read at all.</summary>
     public static long MaxFileBytes => Settings.MaxFileBytes ?? 2 * 1024 * 1024;

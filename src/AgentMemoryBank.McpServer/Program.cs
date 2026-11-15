@@ -49,12 +49,12 @@ internal static class Program
     private static int Fail(string message)
     {
         Console.Error.WriteLine(message);
-        return Help(2);
+        return Help(2, Console.Error);
     }
 
-    private static int Help(int exitCode)
+    private static int Help(int exitCode, TextWriter? output = null)
     {
-        Console.WriteLine($"""
+        (output ?? (exitCode == 0 ? Console.Out : Console.Error)).WriteLine($"""
             agent-memory-bank — local store of durable project knowledge
 
             Commands:
@@ -98,6 +98,7 @@ internal static class Program
                      Run as an MCP stdio server exposing 9 tools (memory_search, memory_get,
                      memory_index, memory_stats, memory_notes_upsert, memory_verify,
                      memory_handoff_save, memory_handoff_latest, memory_handoff_list).
+                     Validates --db and --settings and rejects unknown options.
                      Speaks JSON-RPC on stdin/stdout; logs go to stderr.
                      Intended to be launched by an MCP client, not by hand.
 
@@ -112,9 +113,17 @@ internal static class Program
         return exitCode;
     }
 
+    private static void ApplySettings(CommandLine options)
+    {
+        if (string.IsNullOrWhiteSpace(options.Settings)) return;
+        Environment.SetEnvironmentVariable("MEMORY_BANK_SETTINGS", Path.GetFullPath(options.Settings));
+        Config.ReloadSettings();
+    }
+
     private static int Index(string[] args)
     {
         var options = CommandLine.Parse(args);
+        ApplySettings(options);
         var repos = options.Repos.Count > 0 ? options.Repos : Config.Repos;
         if (repos.Count == 0)
         {
@@ -179,6 +188,7 @@ internal static class Program
     private static int MineGit(string[] args)
     {
         var options = CommandLine.Parse(args);
+        ApplySettings(options);
         var repos = options.Repos.Count > 0 ? options.Repos : Config.Repos;
         if (repos.Count == 0)
         {
@@ -227,6 +237,7 @@ internal static class Program
     private static int Search(string[] args)
     {
         var options = CommandLine.Parse(args);
+        ApplySettings(options);
         if (options.Query.Length == 0) return Fail("search needs a query");
 
         using var db = MemoryDatabase.Open(options.Db);
@@ -239,7 +250,7 @@ internal static class Program
 
         if (result.Notes.Count > 0)
         {
-            Console.WriteLine(HookRunner.FormatNoteHits(result.Notes));
+            Console.WriteLine(ToolResponses.FormatNoteHits(result.Notes));
             Console.WriteLine();
         }
 
@@ -279,12 +290,13 @@ internal static class Program
             return Fail($"unknown kind '{kind}' (expected 'note' or 'chunk')");
 
         var options = CommandLine.Parse(args[2..]);
+        ApplySettings(options);
         using var db = MemoryDatabase.Open(options.Db);
-        var rendered = kind is "note"
-            ? ToolResponses.RenderNoteById(db, id)
-            : ToolResponses.RenderChunkById(db, id);
-        Console.WriteLine(rendered);
-        return rendered.StartsWith("Error:", StringComparison.Ordinal) ? 1 : 0;
+        var found = kind is "note"
+            ? ToolResponses.TryRenderNoteById(db, id, out var rendered)
+            : ToolResponses.TryRenderChunkById(db, id, out rendered);
+        (found ? Console.Out : Console.Error).WriteLine(rendered);
+        return found ? 0 : 1;
     }
 
     private static int Handoff(string[] args)
@@ -293,6 +305,7 @@ internal static class Program
         if (verb.StartsWith('-')) verb = "latest";
         var subArgs = (args.Length > 0 && !args[0].StartsWith('-')) ? args[1..] : args;
         var options = CommandLine.Parse(subArgs);
+        ApplySettings(options);
 
         using var db = MemoryDatabase.Open(options.Db);
 
@@ -308,7 +321,7 @@ internal static class Program
             }
 
             Console.WriteLine();
-            Console.WriteLine(HookRunner.FormatHandoff(latest));
+            Console.WriteLine(ToolResponses.FormatHandoff(latest));
             return 0;
         }
         else if (verb is "save")
@@ -370,6 +383,7 @@ internal static class Program
         if (args.FirstOrDefault() != "add") return Fail("usage: note add --claim TEXT --evidence TEXT [...]");
 
         var options = CommandLine.Parse(args[1..]);
+        ApplySettings(options);
         if (options.Claim is null || options.Evidence is null)
             return Fail("note add needs both --claim and --evidence");
 
@@ -414,6 +428,7 @@ internal static class Program
     private static int VerifyNotes(string[] args)
     {
         var options = CommandLine.Parse(args);
+        ApplySettings(options);
         using var db = MemoryDatabase.Open(options.Db);
         var results = EvidenceVerifier.Verify(db, options.Id, options.Root);
 
@@ -421,9 +436,7 @@ internal static class Program
         {
             if (options.Id is { } targetId && MemorySearch.GetNote(db, targetId)?.SupersededBy is { } by)
             {
-                var head = NoteStore.LiveHead(db, targetId);
-                var chain = head == $"note {by}" ? head : $"note {by} (live head: {head})";
-                Console.WriteLine($"note {targetId} was superseded by {chain}");
+                Console.WriteLine($"note {targetId} was superseded by {NoteStore.DescribeSupersedeChain(db, targetId, by)}");
                 return 0;
             }
             Console.WriteLine("no notes to verify");
@@ -455,6 +468,7 @@ internal static class Program
             return Fail("usage: hook <session-start|recall> [--db PATH]");
 
         var options = CommandLine.Parse(args[1..]);
+        ApplySettings(options);
         return subcommand.ToLowerInvariant() switch
         {
             "session-start" => HookRunner.RunSessionStart(options.Db),
@@ -466,6 +480,7 @@ internal static class Program
     private static int Stats(string[] args)
     {
         var options = CommandLine.Parse(args);
+        ApplySettings(options);
         using var db = MemoryDatabase.Open(options.Db);
         var stats = MemorySearch.Stats(db);
 
@@ -479,11 +494,11 @@ internal static class Program
     private static int Serve(string[] args)
     {
         var options = CommandLine.Parse(args);
-        if (args.Contains("--db"))
+        if (options.HasExplicitDb)
             Environment.SetEnvironmentVariable("MEMORY_BANK_DB", Path.GetFullPath(options.Db));
-        if (!string.IsNullOrWhiteSpace(options.Settings))
-            Environment.SetEnvironmentVariable("MEMORY_BANK_SETTINGS", Path.GetFullPath(options.Settings));
-        Config.ReloadSettings();
+        ApplySettings(options);
+        if (string.IsNullOrWhiteSpace(options.Settings))
+            Config.ReloadSettings();
         return StdioServer.RunAsync().GetAwaiter().GetResult();
     }
 }

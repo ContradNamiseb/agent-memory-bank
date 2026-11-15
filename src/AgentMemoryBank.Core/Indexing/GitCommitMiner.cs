@@ -159,7 +159,7 @@ public static partial class GitCommitMiner
             args.Add($"--since={options.Since}");
         }
 
-        var output = GitFileScanner.RunGit(repoDirectory, [.. args]);
+        var output = GitProcess.Run(repoDirectory, [.. args]);
         return ParseLogOutput(output);
     }
 
@@ -287,9 +287,8 @@ public static partial class GitCommitMiner
         using var cmd = db.CreateCommand();
         cmd.CommandText = """
             SELECT 1 FROM note
-            WHERE superseded_by IS NULL
-              AND evidence LIKE '%' || $sha || '%'
-              AND evidence LIKE '%' || $repo || '%'
+            WHERE instr(evidence, 'git show ' || $sha) > 0
+              AND substr(evidence, -(length($repo) + 3)) = ' (' || $repo || ')'
             LIMIT 1
             """;
         cmd.Parameters.AddWithValue("$sha", shortSha);

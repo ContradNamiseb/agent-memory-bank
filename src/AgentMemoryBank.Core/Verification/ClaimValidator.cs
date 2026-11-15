@@ -1,8 +1,7 @@
 namespace AgentMemoryBank.Verification;
 
 /// <summary>
-/// Pure domain rules governing whether a proposed claim is falsifiable and
-/// which significant terms carry its meaning.
+/// Pure domain rules governing whether a proposed claim is falsifiable.
 /// </summary>
 public static class ClaimValidator
 {
@@ -36,11 +35,4 @@ public static class ClaimValidator
         }
         return true;
     }
-
-    /// <summary>Content words of a claim, lowercased: long enough to carry meaning.</summary>
-    public static HashSet<string> SignificantTerms(string text) =>
-        text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
-            .Select(t => new string(t.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant())
-            .Where(t => t.Length >= 4)
-            .ToHashSet();
 }

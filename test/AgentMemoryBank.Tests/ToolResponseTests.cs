@@ -244,4 +244,33 @@ public class ToolResponseTests
         Assert.Equal("UserPromptSubmit", hook.GetProperty("hookEventName").GetString());
         Assert.Contains("retry_jitter is fitted against p95 latency", hook.GetProperty("additionalContext").GetString());
     }
+
+    [Fact]
+    public void ToolResponses_FormatHandoff_includes_context_when_present()
+    {
+        using var repo = new TempRepo();
+        using var db = MemoryDatabase.Open(repo.DbPath);
+
+        var withoutContext = HandoffStore.Save(db, new SessionHandoffDraft
+        {
+            Agent = "codex",
+            Topic = "Without context",
+            Summary = "Summary A",
+            NextSteps = "Next A",
+            ContextData = "   ",
+        });
+        Assert.DoesNotContain("--- Context ---", ToolResponses.FormatHandoff(withoutContext));
+
+        var withContext = HandoffStore.Save(db, new SessionHandoffDraft
+        {
+            Agent = "claudecode",
+            Topic = "With context",
+            Summary = "Summary B",
+            NextSteps = "Next B",
+            ContextData = "branch=refactor/clean-architecture sha=abc1234",
+        });
+        var formatted = ToolResponses.FormatHandoff(withContext);
+        Assert.Contains("--- Context ---", formatted);
+        Assert.Contains("branch=refactor/clean-architecture sha=abc1234", formatted);
+    }
 }

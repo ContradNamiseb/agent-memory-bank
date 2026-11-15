@@ -17,23 +17,34 @@ public sealed record IndexEntry(
 /// </summary>
 public static class NoteIndex
 {
-    internal const string RepoFilterSql = """
-        ($repo IS NULL
-         OR n.evidence LIKE '%' || $repo || '/%'
-         OR n.evidence LIKE '%' || $repo || ':%'
-         OR EXISTS (SELECT 1 FROM edge e
-                    JOIN chunk c ON c.id = e.dst_id
-                    JOIN file f ON f.id = c.file_id
-                    WHERE e.src_kind = 'note' AND e.src_id = n.id
-                      AND e.dst_kind = 'chunk' AND f.repo = $repo))
+    internal const string RepoMatchSql = """
+        (EXISTS (SELECT 1 FROM edge e
+                 JOIN chunk c ON c.id = e.dst_id
+                 JOIN file f ON f.id = c.file_id
+                 WHERE e.src_kind = 'note' AND e.src_id = n.id
+                   AND e.dst_kind = 'chunk' AND f.repo = $repo)
+         OR EXISTS (SELECT 1 FROM tag t WHERE t.note_id = n.id AND t.tag = lower($repo))
+         OR substr(n.evidence, 1, length($repo) + 1) IN ($repo || '/', $repo || ':')
+         OR instr(n.evidence, ' ' || $repo || '/') > 0
+         OR instr(n.evidence, ' ' || $repo || ':') > 0
+         OR substr(n.evidence, -(length($repo) + 3)) = ' (' || $repo || ')')
+        """;
+
+    internal const string UnattributedNoteSql = """
+        (NOT EXISTS (SELECT 1 FROM edge e WHERE e.src_kind = 'note' AND e.src_id = n.id AND e.dst_kind = 'chunk')
+         AND NOT EXISTS (SELECT 1 FROM tag t WHERE t.note_id = n.id AND t.tag = 'git-history')
+         AND COALESCE(n.evidence, '') NOT GLOB '*[A-Za-z0-9._-]/[A-Za-z0-9._/-]*.*:[0-9]*'
+         AND COALESCE(n.evidence, '') NOT GLOB '*[A-Za-z0-9._-]:[A-Za-z0-9._/-]*.*:[0-9]*')
+        """;
+
+    internal const string RepoFilterSql = $"""
+        ($repo IS NULL OR {RepoMatchSql})
         """;
 
     /// <summary>
     /// Notes matching every given filter, newest first. A note belongs to a
-    /// repository when one of its citations resolved into that repository's
-    /// index, or when its evidence names the repository as a path/commit prefix —
-    /// the second catches citations into vendored or unindexed trees and mined
-    /// commits, which do not always carry chunk edges.
+    /// repository when it has a chunk citation edge, a matching repo tag,
+    /// an exact repo path/colon prefix in evidence, or a git-show suffix <c>(repo)</c>.
     /// </summary>
     public static (IReadOnlyList<IndexEntry> Entries, int Total) List(SqliteConnection db,
         string? repo = null, NoteKind? kind = null, string? tag = null, bool includeSuperseded = false,
@@ -77,9 +88,16 @@ public static class NoteIndex
         return (entries, total);
     }
 
-    /// <summary>Every repository name the index knows, for refusing an unknown one with the valid list.</summary>
+    /// <summary>Every repository name the store knows, for refusing an unknown one with the valid list.</summary>
     public static IReadOnlyList<string> Repos(SqliteConnection db) =>
-        db.Prepare("SELECT DISTINCT repo FROM file ORDER BY repo").Query(r => r.GetString("repo"));
+        db.Prepare("""
+            SELECT DISTINCT repo FROM file
+            UNION
+            SELECT DISTINCT t.tag FROM tag t
+            JOIN tag g ON g.note_id = t.note_id AND g.tag = 'git-history'
+            WHERE t.tag <> 'git-history'
+            ORDER BY 1
+            """).Query(r => r.GetString(0));
 
     /// <summary>The most used tags, for refusing an unknown one with the valid list.</summary>
     public static IReadOnlyList<string> Tags(SqliteConnection db, int limit = 40) =>

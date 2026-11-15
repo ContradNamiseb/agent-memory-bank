@@ -51,7 +51,7 @@ public class EvidenceVerifierTests
     {
         var lines = AgentMemoryBank.Indexing.Chunkers.Chunker.SplitLines(SampleCpp);
 
-        var anchor = EvidenceVerifier.ChooseAnchorText(lines, citedLine: 3);
+        var anchor = AnchorSelector.ChooseAnchorText(lines, citedLine: 3);
 
         // Anchoring to the comment would keep matching after the value changed.
         Assert.Equal("float retry_backoff = 1.5f;", anchor);
@@ -63,7 +63,7 @@ public class EvidenceVerifierTests
         var lines = AgentMemoryBank.Indexing.Chunkers.Chunker.SplitLines(SampleCpp);
 
         // Line 5 is "};" — useless as an anchor, it would match all over.
-        var anchor = EvidenceVerifier.ChooseAnchorText(lines, citedLine: 5);
+        var anchor = AnchorSelector.ChooseAnchorText(lines, citedLine: 5);
 
         Assert.NotNull(anchor);
         Assert.NotEqual("};", anchor);

@@ -8,8 +8,12 @@ namespace AgentMemoryBank.McpServer;
 /// </summary>
 internal sealed record CommandLine
 {
-    public string Db { get; private init; } = Config.DbPath;
-    public string Root { get; private init; } = Config.RepoRoot;
+    private string? _db;
+    private string? _root;
+
+    public string Db { get => _db ?? Config.DbPath; private init => _db = value; }
+    public string Root { get => _root ?? Config.RepoRoot; private init => _root = value; }
+    public bool HasExplicitDb => _db is not null;
     public List<string> Repos { get; } = [];
     public string? Repo { get; private init; }
     public NoteKind? Kind { get; private init; }
