@@ -20,6 +20,10 @@ internal static partial class ClaudeTranscript
 {
     private const string UsageMarker = "\"cache_read_input_tokens\"";
 
+    // Lines with the marker kept for parsing, newest last. More than one because
+    // the newest need not be the client's own usage block (see LastPromptTokens).
+    private const int UsageCandidates = 16;
+
     private static readonly HashSet<string> EditTools = new(StringComparer.Ordinal) { "Edit", "Write", "NotebookEdit" };
 
     // Turns the client records as "user" that the user did not type: slash
@@ -32,37 +36,49 @@ internal static partial class ClaudeTranscript
     /// <summary>
     /// Prompt size of the most recent request: input, cache-read and
     /// cache-creation tokens from the last usage block. Matches the marker as
-    /// plain text and parses only that line, because threshold mode runs this on
-    /// every prompt and a transcript reaches tens of megabytes.
+    /// plain text and parses only the newest matches, because threshold mode
+    /// runs this on every prompt and a transcript reaches tens of megabytes:
+    /// parsing every match doubles the time. The newest match is not always the
+    /// one wanted: a subagent's result carries the subagent's usage outside
+    /// <c>message</c>, and the last line can be half-written. So it walks back
+    /// to the newest line that is the client's own usage block.
     /// </summary>
     public static long LastPromptTokens(string path)
     {
-        string? usageLine = null;
+        var candidates = new Queue<string>(UsageCandidates);
         foreach (var line in File.ReadLines(path))
         {
-            if (line.Contains(UsageMarker, StringComparison.Ordinal))
-                usageLine = line;
+            if (!line.Contains(UsageMarker, StringComparison.Ordinal))
+                continue;
+            if (candidates.Count == UsageCandidates)
+                candidates.Dequeue();
+            candidates.Enqueue(line);
         }
-        if (usageLine is null)
-            return 0;
 
-        try
+        foreach (var line in candidates.Reverse())
         {
-            using var doc = JsonDocument.Parse(usageLine);
-            return doc.RootElement.ValueKind == JsonValueKind.Object &&
-                   doc.RootElement.TryGetProperty("message", out var message) &&
-                   message.ValueKind == JsonValueKind.Object &&
-                   message.TryGetProperty("usage", out var usage) &&
-                   usage.ValueKind == JsonValueKind.Object
-                ? Tokens(usage, "input_tokens") + Tokens(usage, "cache_read_input_tokens") +
-                  Tokens(usage, "cache_creation_input_tokens")
-                : 0;
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+                if (PromptTokens(doc.RootElement) is { } tokens)
+                    return tokens;
+            }
+            catch (JsonException)
+            {
+                // Half-written: try the line before.
+            }
         }
-        catch (JsonException)
-        {
-            return 0;
-        }
+        return 0;
     }
+
+    /// <summary>The prompt size a record's own usage block gives, or null when it has none.</summary>
+    private static long? PromptTokens(JsonElement record) =>
+        record.ValueKind == JsonValueKind.Object &&
+        record.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.Object &&
+        message.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object
+            ? Tokens(usage, "input_tokens") + Tokens(usage, "cache_read_input_tokens") +
+              Tokens(usage, "cache_creation_input_tokens")
+            : null;
 
     public static TranscriptSnapshot Read(string path)
     {

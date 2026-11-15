@@ -2,6 +2,10 @@
 
 All notable user-visible changes to `agent-memory-bank` are documented in this file.
 
+## Unreleased
+
+- **Context occupancy ignores subagent usage and half-written lines:** `hook handoff` measured occupancy from the last transcript line that mentioned `cache_read_input_tokens`. That line can be a subagent's result, which carries the subagent's usage outside `message`, or a line still being written. Either read as 0%, so threshold mode skipped a save it was due and a PreCompact handoff straight after a subagent call recorded 0%. It now walks back to the newest line that is the client's own usage block.
+
 ## 0.0.4
 
 - **Handoff topics skip background-task notifications:** Claude Code records a finished background task as a `<task-notification>` "user" turn. `hook handoff` took one that arrived after the last real request as the handoff's topic and listed it among the recent requests; it now skips them, as it already skipped slash commands and system reminders.

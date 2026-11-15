@@ -106,6 +106,28 @@ public class HandoffHookTests
     }
 
     [Fact]
+    public void Usage_outside_the_message_or_on_a_half_written_line_does_not_reset_occupancy()
+    {
+        using var repo = NewRepo();
+        var transcript = WriteTranscript(repo, repo.RepoDirectory, promptTokens: 960, User("nearly full now"));
+        // A subagent's result carries the subagent's usage, outside message; a
+        // record still being written can stop inside a usage block.
+        File.AppendAllLines(transcript,
+        [
+            JsonSerializer.Serialize(new
+            {
+                type = "user",
+                message = new { role = "user", content = new object[] { new { type = "tool_result", content = "done" } } },
+                toolUseResult = new { usage = new { input_tokens = 3, cache_read_input_tokens = 2, cache_creation_input_tokens = 1 } },
+            }),
+            "{\"type\":\"assistant\",\"message\":{\"usage\":{\"cache_read_input_tokens\":",
+        ]);
+
+        Assert.Equal(960, ClaudeTranscript.LastPromptTokens(transcript));
+        Assert.Contains("Context at 96%", Run(repo, AutoHandoffMode.Threshold, Payload(transcript, repo.RepoDirectory, "s")));
+    }
+
+    [Fact]
     public void Without_a_store_it_stays_silent_and_creates_nothing()
     {
         using var repo = new TempRepo();
