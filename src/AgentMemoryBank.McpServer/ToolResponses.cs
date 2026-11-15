@@ -1,5 +1,6 @@
 using System.Text;
 using Microsoft.Data.Sqlite;
+using AgentMemoryBank.Continuity;
 using AgentMemoryBank.Database;
 using AgentMemoryBank.Models;
 
@@ -182,12 +183,15 @@ public static class ToolResponses
         return true;
     }
 
-    internal static string FormatHandoff(SessionHandoff h)
+    internal static string FormatHandoff(HandoffReader.Lookup lookup, int maxChars = 0)
     {
+        var h = lookup.Handoff ?? throw new ArgumentNullException(nameof(lookup));
         var sb = new StringBuilder();
         sb.AppendLine($"=== Session Handoff #{h.Id} ({h.Agent}) ===");
         sb.AppendLine($"Topic:   {h.Topic}");
         sb.AppendLine($"Created: {h.CreatedAt}");
+        if (h.Checkout is { } c)
+            sb.AppendLine($"Written: `{c.BranchLabel}` @ `{c.ShortHead}` in `{c.Worktree}`");
         if (!string.IsNullOrWhiteSpace(h.ActiveFiles))
             sb.AppendLine($"Files:   {h.ActiveFiles}");
         sb.AppendLine();
@@ -208,7 +212,15 @@ public static class ToolResponses
             sb.AppendLine("--- Context ---");
             sb.AppendLine(h.ContextData);
         }
-        return sb.ToString().TrimEnd();
+
+        var body = sb.ToString().TrimEnd();
+        if (maxChars > 0 && body.Length > maxChars)
+            body = body[..maxChars] + $"\n…[cut at {maxChars} of {body.Length} chars; memory_handoff_latest max_chars=0 for all]";
+
+        if (lookup.Preamble.Count == 0)
+            return body;
+
+        return string.Join(Environment.NewLine, lookup.Preamble) + Environment.NewLine + Environment.NewLine + body;
     }
 
     internal static string FormatNoteHits(IReadOnlyList<NoteHit> notes)

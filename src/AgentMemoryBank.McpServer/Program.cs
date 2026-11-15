@@ -74,7 +74,7 @@ internal static class Program
                      Inspect one note or chunk in full with lines and citations.
 
               handoff [latest|save|list] [--agent A] [--topic T] [--summary S] [--next N] [--files F]
-                      [--questions Q] [--context C] [--scope repo|worktree|all] [--cwd DIR] [--db PATH]
+                      [--questions Q] [--context C] [--scope repo|worktree|all] [--cwd DIR] [--limit N] [--db PATH]
                      Cross-agent session continuity: save or view handoff snapshots to migrate between
                      Antigravity, Claude Code, and Copilot without losing context. save records the
                      git checkout of --cwd (default: here); latest warns first when it differs from
@@ -312,16 +312,15 @@ internal static class Program
         if (verb is "latest")
         {
             var lookup = HandoffReader.Latest(db, options.Agent, options.Scope, options.Cwd);
-            // Warnings before the handoff: the reader has to see them before "done".
-            foreach (var line in lookup.Preamble) Console.WriteLine(line);
-            if (lookup.Handoff is not { } latest)
+            if (lookup.Handoff is null)
             {
+                // Notices/warnings before the miss explanation so scope widening is clear.
+                foreach (var line in lookup.Preamble) Console.WriteLine(line);
                 Console.WriteLine(lookup.Miss);
                 return 0;
             }
 
-            Console.WriteLine();
-            Console.WriteLine(ToolResponses.FormatHandoff(latest));
+            Console.WriteLine(ToolResponses.FormatHandoff(lookup));
             return 0;
         }
         else if (verb is "save")

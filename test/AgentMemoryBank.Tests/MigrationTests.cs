@@ -131,4 +131,58 @@ public sealed class MigrationTests
         var found = MemorySearch.SearchNotes(db, "upgraded store", limit: 5);
         Assert.Contains(found, n => n.Id == accepted.Id);
     }
+
+    [Fact]
+    public void A_v1_store_migrates_to_v2_on_open_with_notes_and_handoffs_intact()
+    {
+        using var repo = new TempRepo();
+        var fixturePath = Path.Combine(repo.Root, "v1-fixture.db");
+        using (var v1 = new SqliteConnection(
+                   new SqliteConnectionStringBuilder { DataSource = fixturePath, Pooling = false }.ToString()))
+        {
+            v1.Open();
+            v1.Execute(LegacySchema);
+            v1.Execute("""
+                CREATE TABLE session_handoff (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  agent TEXT NOT NULL,
+                  topic TEXT NOT NULL,
+                  summary TEXT NOT NULL,
+                  next_steps TEXT NOT NULL,
+                  active_files TEXT,
+                  open_questions TEXT,
+                  context_data TEXT,
+                  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')));
+                INSERT INTO run(id, started_at, tool) VALUES (1, datetime('now'), 'manual');
+                INSERT INTO note(claim, evidence, kind, confidence, run_id)
+                VALUES ('v1 claim survives v2 upgrade', 'dotnet test -> ok', 'finding', 'measured', 1);
+                INSERT INTO session_handoff(agent, topic, summary, next_steps, context_data)
+                VALUES ('Claude Code', 'v1 handoff', 'Saved on schema v1', 'Upgrade cleanly', 'k=v');
+                PRAGMA user_version = 1;
+                """);
+            Assert.Equal(1, v1.Scalar<long>("PRAGMA user_version"));
+        }
+
+        File.Copy(fixturePath, repo.DbPath, overwrite: true);
+
+        using var db = MemoryDatabase.Open(repo.DbPath);
+
+        Assert.Equal(2, Migrations.CurrentVersion);
+        Assert.Equal(Migrations.CurrentVersion, db.Scalar<long>("PRAGMA user_version"));
+        Assert.Equal("ok", db.Scalar<string>("PRAGMA integrity_check"));
+
+        foreach (var col in new[] { "repo_id", "worktree", "branch", "head_commit", "dirty_paths", "upstream", "ahead" })
+            Assert.True(Migrations.ColumnExists(db, "session_handoff", col), col);
+
+        var note = db.Prepare("SELECT claim, evidence FROM note WHERE claim = 'v1 claim survives v2 upgrade'")
+            .Query(r => r.GetString("claim"));
+        Assert.Single(note);
+
+        var handoff = HandoffStore.GetLatest(db);
+        Assert.NotNull(handoff);
+        Assert.Equal("v1 handoff", handoff.Topic);
+        Assert.Equal("Saved on schema v1", handoff.Summary);
+        Assert.Equal("k=v", handoff.ContextData);
+        Assert.Null(handoff.Checkout);
+    }
 }

@@ -1,5 +1,4 @@
 using System.ComponentModel;
-using System.Text;
 using Microsoft.Data.Sqlite;
 using ModelContextProtocol.Server;
 using AgentMemoryBank.Continuity;
@@ -100,11 +99,7 @@ public sealed class McpHandoffTools
         }
 
         // The warnings come first and are never cut: max_chars trims the handoff, not the caveats on it.
-        var preamble = string.Join('\n', lookup.Preamble);
-        var body = Render(lookup.Handoff);
-        if (max_chars > 0 && body.Length > max_chars)
-            body = body[..max_chars] + $"\n…[cut at {max_chars} of {body.Length} chars; memory_handoff_latest max_chars=0 for all]";
-        return preamble + "\n\n" + body;
+        return ToolResponses.FormatHandoff(lookup, max_chars);
     }
 
     [McpServerTool(Name = "memory_handoff_list", ReadOnly = true)]
@@ -170,20 +165,6 @@ public sealed class McpHandoffTools
         var agents = db.Prepare("SELECT DISTINCT agent FROM session_handoff ORDER BY agent")
             .Query(r => r.GetString("agent"));
         return $"No handoff from an agent matching '{agent}'. Agents with handoffs: {string.Join(", ", agents)}.";
-    }
-
-    private static string Render(SessionHandoff h)
-    {
-        var text = new StringBuilder();
-        text.AppendLine($"handoff #{h.Id} · {h.Agent} · {h.CreatedAt}");
-        if (h.Checkout is { } c) text.AppendLine($"written on: `{c.BranchLabel}` @ `{c.ShortHead}` in `{c.Worktree}`");
-        text.AppendLine($"topic: {h.Topic}");
-        text.AppendLine($"summary:\n{h.Summary}");
-        text.AppendLine($"next steps:\n{h.NextSteps}");
-        if (!string.IsNullOrWhiteSpace(h.ActiveFiles)) text.AppendLine($"active files: {h.ActiveFiles}");
-        if (!string.IsNullOrWhiteSpace(h.OpenQuestions)) text.AppendLine($"open questions:\n{h.OpenQuestions}");
-        if (!string.IsNullOrWhiteSpace(h.ContextData)) text.AppendLine($"context: {h.ContextData}");
-        return text.ToString().TrimEnd();
     }
 
     private static string Short(string iso) => iso.Length >= 16 ? iso[..16].Replace('T', ' ') : iso;

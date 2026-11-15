@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AgentMemoryBank.Continuity;
 using AgentMemoryBank.Database;
 using AgentMemoryBank.Indexing;
 using AgentMemoryBank.McpServer;
@@ -186,7 +187,7 @@ public class ToolResponseTests
 
         // Missing DB file must emit nothing and never create an empty database file.
         var silent = new StringWriter();
-        Assert.Equal(0, HookRunner.RunSessionStart(repo.DbPath, silent));
+        Assert.Equal(0, HookRunner.RunSessionStart(repo.DbPath, new StringReader(""), silent));
         Assert.Equal("", silent.ToString());
         Assert.False(File.Exists(repo.DbPath));
 
@@ -197,10 +198,11 @@ public class ToolResponseTests
             Topic = "Refactor memory bank hooks",
             Summary = "Moved hook logic into HookRunner.",
             NextSteps = "Run full test suite.",
+            Checkout = GitCheckout.Capture(Environment.CurrentDirectory),
         });
 
         var output = new StringWriter();
-        Assert.Equal(0, HookRunner.RunSessionStart(repo.DbPath, output));
+        Assert.Equal(0, HookRunner.RunSessionStart(repo.DbPath, stdout: output, stdin: new StringReader("")));
 
         using var doc = JsonDocument.Parse(output.ToString().Trim());
         var hook = doc.RootElement.GetProperty("hookSpecificOutput");
@@ -208,6 +210,51 @@ public class ToolResponseTests
         var ctx = hook.GetProperty("additionalContext").GetString()!;
         Assert.Contains("Refactor memory bank hooks", ctx);
         Assert.Contains("Moved hook logic into HookRunner.", ctx);
+
+        if (!Console.IsInputRedirected)
+        {
+            var directOutput = new StringWriter();
+            Assert.Equal(0, HookRunner.RunSessionStart(repo.DbPath, directOutput));
+            using var directDoc = JsonDocument.Parse(directOutput.ToString().Trim());
+            Assert.Contains("Refactor memory bank hooks",
+                directDoc.RootElement.GetProperty("hookSpecificOutput").GetProperty("additionalContext").GetString()!);
+        }
+    }
+
+    [Fact]
+    public void HookRunner_RunSessionStart_with_stdin_cwd_on_another_branch_prints_warning_before_handoff()
+    {
+        using var repo = new TempRepo();
+        repo.Write("README.md", "fixture\n");
+        repo.Commit("initial commit");
+
+        using var db = MemoryDatabase.Open(repo.DbPath);
+        HandoffStore.Save(db, new SessionHandoffDraft
+        {
+            Agent = "codex",
+            Topic = "Refactor session start hook",
+            Summary = "Hook now checks branch checkout.",
+            NextSteps = "Verify on another branch.",
+            Checkout = GitCheckout.Capture(repo.RepoDirectory),
+        });
+
+        repo.Git("checkout", "-q", "-b", "other-branch");
+        repo.Write("next.txt", "next branch work\n");
+        repo.Commit("branch work");
+
+        var payload = JsonSerializer.Serialize(new { cwd = repo.RepoDirectory });
+        var output = new StringWriter();
+        Assert.Equal(0, HookRunner.RunSessionStart(repo.DbPath, new StringReader(payload), output));
+
+        using var doc = JsonDocument.Parse(output.ToString().Trim());
+        var hook = doc.RootElement.GetProperty("hookSpecificOutput");
+        Assert.Equal("SessionStart", hook.GetProperty("hookEventName").GetString());
+        var ctx = hook.GetProperty("additionalContext").GetString()!;
+        var warningIdx = ctx.IndexOf("WARNING:", StringComparison.Ordinal);
+        var headerIdx = ctx.IndexOf("=== Session Handoff", StringComparison.Ordinal);
+        Assert.True(warningIdx >= 0, $"expected WARNING line in:\n{ctx}");
+        Assert.True(headerIdx > warningIdx, $"expected WARNING before handoff header in:\n{ctx}");
+        Assert.Contains("Written:", ctx);
     }
 
     [Fact]
@@ -259,7 +306,7 @@ public class ToolResponseTests
             NextSteps = "Next A",
             ContextData = "   ",
         });
-        Assert.DoesNotContain("--- Context ---", ToolResponses.FormatHandoff(withoutContext));
+        Assert.DoesNotContain("--- Context ---", ToolResponses.FormatHandoff(new HandoffReader.Lookup(withoutContext, [], null)));
 
         var withContext = HandoffStore.Save(db, new SessionHandoffDraft
         {
@@ -269,7 +316,8 @@ public class ToolResponseTests
             NextSteps = "Next B",
             ContextData = "branch=refactor/clean-architecture sha=abc1234",
         });
-        var formatted = ToolResponses.FormatHandoff(withContext);
+        var formatted = ToolResponses.FormatHandoff(new HandoffReader.Lookup(withContext, ["Warning: reading handoff from another branch."], null));
+        Assert.Contains("Warning: reading handoff from another branch.", formatted);
         Assert.Contains("--- Context ---", formatted);
         Assert.Contains("branch=refactor/clean-architecture sha=abc1234", formatted);
     }
