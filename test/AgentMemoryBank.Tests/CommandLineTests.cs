@@ -5,7 +5,8 @@ namespace AgentMemoryBank.Tests;
 
 /// <summary>
 /// Numeric options: a value that is not a whole number is a usage error naming
-/// the option, and --percent must be a percentage threshold mode can reach.
+/// the option, --percent must be a percentage threshold mode can reach, and
+/// --limit and --id must be 1 or more.
 /// </summary>
 public class CommandLineTests
 {
@@ -15,7 +16,11 @@ public class CommandLineTests
     [InlineData("--percent", "-5")]
     [InlineData("--percent", "101")]
     [InlineData("--limit", "ten")]
+    [InlineData("--limit", "0")]
+    [InlineData("--limit", "-1")]
     [InlineData("--id", "1.5")]
+    [InlineData("--id", "0")]
+    [InlineData("--id", "-3")]
     public void A_bad_number_is_a_usage_error_naming_the_option_and_the_value(string flag, string value)
     {
         var error = Assert.Throws<ArgumentException>(() => CommandLine.Parse([flag, value]));

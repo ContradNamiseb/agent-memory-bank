@@ -74,7 +74,7 @@ internal sealed record CommandLine
                 case "--root": options = options with { Root = Next(arg) }; break;
                 case "--repo": options.Repos.Add(Next(arg)); break;
                 case "--kind": options = options with { Kind = ParseKind(Next(arg)) }; break;
-                case "--limit": options = options with { LimitOption = ParseNumber<int>(arg, Next(arg)) }; break;
+                case "--limit": options = options with { LimitOption = ParsePositive<int>(arg, Next(arg)) }; break;
                 case "--since": options = options with { Since = Next(arg) }; break;
                 case "--note": options = options with { Note = Next(arg) }; break;
                 case "--claim": options = options with { Claim = Next(arg) }; break;
@@ -92,7 +92,7 @@ internal sealed record CommandLine
                 case "--cwd": options = options with { Cwd = Next(arg) }; break;
                 case "--mode": options = options with { HandoffMode = ParseHandoffMode(Next(arg)) }; break;
                 case "--percent": options = options with { Percent = ParsePercent(Next(arg)) }; break;
-                case "--id": options = options with { Id = ParseNumber<long>(arg, Next(arg)) }; break;
+                case "--id": options = options with { Id = ParsePositive<long>(arg, Next(arg)) }; break;
                 case "--tags":
                     options.Tags.AddRange(Next(arg).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
                     break;
@@ -119,6 +119,16 @@ internal sealed record CommandLine
         T.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var number)
             ? number
             : throw new ArgumentException($"{flag} needs a whole number, got '{value}'");
+
+    // A count or an id: 0 selects nothing, and SQLite reads a negative LIMIT as
+    // no limit at all. Leave the option out for the default.
+    private static T ParsePositive<T>(string flag, string value) where T : IBinaryInteger<T>
+    {
+        var number = ParseNumber<T>(flag, value);
+        return number > T.Zero
+            ? number
+            : throw new ArgumentException($"{flag} must be 1 or more, got '{value}'");
+    }
 
     // Below 1, threshold mode would save on every prompt; above 100, never.
     private static int ParsePercent(string value)
