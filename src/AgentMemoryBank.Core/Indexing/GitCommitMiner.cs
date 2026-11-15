@@ -296,9 +296,9 @@ public static partial class GitCommitMiner
         foreach (var id in ids)
         {
             var (headId, _) = NoteStore.LiveHeadId(db, id);
-            NoteStore.EnsureTags(db, headId, ["git-history", repoName]);
+            NoteStore.EnsureTags(db, headId, [repoName]);
             if (headId != id)
-                NoteStore.EnsureTags(db, id, ["git-history", repoName]);
+                NoteStore.EnsureTags(db, id, [repoName]);
         }
         return true;
     }
@@ -315,9 +315,10 @@ public static partial class GitCommitMiner
         if (repoShortShas.Count == 0) return;
 
         using var cmd = db.Prepare("""
-            SELECT id, evidence FROM note
-            WHERE evidence LIKE 'git show %'
-            ORDER BY id
+            SELECT n.id, n.evidence FROM note n
+            JOIN tag g ON g.note_id = n.id AND g.tag = 'git-history'
+            WHERE n.evidence LIKE 'git show %'
+            ORDER BY n.id
             """);
         var mined = cmd.Query(r => (Id: r.GetInt64(0), Evidence: r.GetString(1)));
         foreach (var (id, evidence) in mined)
@@ -328,9 +329,9 @@ public static partial class GitCommitMiner
             if (!repoShortShas.Contains(sha)) continue;
 
             var (headId, _) = NoteStore.LiveHeadId(db, id);
-            NoteStore.EnsureTags(db, headId, ["git-history", repoName]);
+            NoteStore.EnsureTags(db, headId, [repoName]);
             if (headId != id)
-                NoteStore.EnsureTags(db, id, ["git-history", repoName]);
+                NoteStore.EnsureTags(db, id, [repoName]);
         }
     }
 

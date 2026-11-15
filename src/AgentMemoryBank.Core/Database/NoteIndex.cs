@@ -35,9 +35,11 @@ public static class NoteIndex
     internal const string KnownReposSql = """
         SELECT DISTINCT repo FROM file
         UNION
-        SELECT DISTINCT t.tag AS repo FROM tag t
-        JOIN tag g ON g.note_id = t.note_id AND g.tag = 'git-history'
-        WHERE t.tag <> 'git-history'
+        SELECT DISTINCT substr(n.evidence, instr(n.evidence, ' (') + 2, length(n.evidence) - instr(n.evidence, ' (') - 2) AS repo
+        FROM note n
+        JOIN tag g ON g.note_id = n.id AND g.tag = 'git-history'
+        WHERE n.evidence LIKE 'git show % (%)'
+          AND instr(n.evidence, ' (') > 0
         """;
 
     internal static readonly string SearchRepoFilterSql = $"""

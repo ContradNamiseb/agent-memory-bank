@@ -394,6 +394,85 @@ public sealed class GitCommitMinerTests
         }
     }
 
+    [Fact]
+    public void Superseding_mined_note_with_topic_tag_and_remining_does_not_turn_topic_tag_into_repo()
+    {
+        using var repo = new TempRepo();
+        repo.Write("src/pool.cc", "void RunPool() {}\n");
+        repo.Commit("Fix worker pool wakeup under contention\n\nPrevents missed notification when queue drains.");
+
+        using var db = MemoryDatabase.Open(repo.DbPath);
+        Indexer.IndexRepo(db, repo.RepoName, repo.RepoDirectory);
+
+        var firstMine = GitCommitMiner.MineAll(db, repo.Root, [repo.RepoName], new GitMineOptions());
+        Assert.Equal(1, Assert.Single(firstMine.Results).NotesCreated);
+
+        var mined = Assert.Single(NoteIndex.List(db, repo: repo.RepoName).Entries);
+        Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Supersede(db, mined.Id, new NoteDraft
+        {
+            Claim = "Worker pool wakeup requires notifying all waiting threads",
+            Evidence = $"{repo.RepoName}/src/pool.cc:1",
+            Tags = ["threading"],
+        }, why: "refined cause", repoRoot: repo.Root));
+
+        Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, new NoteDraft
+        {
+            Claim = "The worker pool starves when every thread waits on the same condition variable",
+            Evidence = "measured: 12% faster with two condition variables",
+            Kind = NoteKind.Hazard,
+            Tags = ["threading"],
+        }, repo.Root));
+
+        Assert.Contains(
+            MemorySearch.Search(db, "worker pool starves", repo: repo.RepoName).Notes,
+            n => n.Claim.StartsWith("The worker pool starves", StringComparison.Ordinal));
+
+        GitCommitMiner.MineAll(db, repo.Root, [repo.RepoName], new GitMineOptions());
+
+        Assert.DoesNotContain("threading", NoteIndex.Repos(db));
+        Assert.Contains(
+            MemorySearch.Search(db, "worker pool starves", repo: repo.RepoName).Notes,
+            n => n.Claim.StartsWith("The worker pool starves", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Handwritten_git_show_note_with_topic_tag_does_not_turn_topic_tag_into_repo_on_mine()
+    {
+        using var repo = new TempRepo();
+        repo.Write("src/pool.cc", "void RunPool() {}\n");
+        repo.Commit("Fix worker pool wakeup under contention\n\nPrevents missed notification when queue drains.");
+
+        using var db = MemoryDatabase.Open(repo.DbPath);
+        Indexer.IndexRepo(db, repo.RepoName, repo.RepoDirectory);
+
+        var headSha = GitFileScanner.HeadRevision(repo.RepoDirectory)![..8];
+        Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, new NoteDraft
+        {
+            Claim = "Callback lock must be released before invoking completion handler",
+            Evidence = $"git show {headSha} moves the release above the callback",
+            Tags = ["threading"],
+        }, repo.Root));
+
+        Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, new NoteDraft
+        {
+            Claim = "The worker pool starves when every thread waits on the same condition variable",
+            Evidence = "measured: 12% faster with two condition variables",
+            Kind = NoteKind.Hazard,
+            Tags = ["threading"],
+        }, repo.Root));
+
+        Assert.Contains(
+            MemorySearch.Search(db, "worker pool starves", repo: repo.RepoName).Notes,
+            n => n.Claim.StartsWith("The worker pool starves", StringComparison.Ordinal));
+
+        GitCommitMiner.MineAll(db, repo.Root, [repo.RepoName], new GitMineOptions());
+
+        Assert.DoesNotContain("threading", NoteIndex.Repos(db));
+        Assert.Contains(
+            MemorySearch.Search(db, "worker pool starves", repo: repo.RepoName).Notes,
+            n => n.Claim.StartsWith("The worker pool starves", StringComparison.Ordinal));
+    }
+
     private static void SeedRun(Microsoft.Data.Sqlite.SqliteConnection db, long runId = 1)
     {
         using var cmd = db.CreateCommand();
