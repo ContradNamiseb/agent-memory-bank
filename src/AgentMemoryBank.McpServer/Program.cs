@@ -95,7 +95,7 @@ internal static class Program
                      (SessionStart) injects the latest handoff for this repository; recall
                      (UserPromptSubmit) injects strict identifier matches; handoff (PreCompact)
                      saves a handoff from the session transcript.
-              hook handoff [--mode force|threshold] [--percent N]
+              hook handoff [--mode force|threshold] [--percent N (1-100)]
                      force (default) saves every time; threshold saves at N% (default 95) of
                      autoCompactWindow, at most every 15 minutes per session.
 
