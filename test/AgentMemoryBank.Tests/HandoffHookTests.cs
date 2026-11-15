@@ -94,6 +94,26 @@ public class HandoffHookTests
     }
 
     [Fact]
+    public void A_reminder_block_beside_a_request_neither_hides_it_nor_joins_it()
+    {
+        using var repo = NewRepo();
+        // The client can put its own text in the same list as the user's: a
+        // session started with context opens with a reminder block.
+        var transcript = WriteTranscript(repo, repo.RepoDirectory, promptTokens: 100,
+            UserBlocks(new { type = "text", text = "<system-reminder> The user started this session with context </system-reminder>" },
+                       new { type = "text", text = "tidy the training config" }),
+            UserBlocks(new { type = "text", text = "now run the fit" },
+                       new { type = "text", text = "<system-reminder> A background task finished </system-reminder>" }));
+
+        Run(repo, AutoHandoffMode.Force, Payload(transcript, repo.RepoDirectory, "session-4"));
+
+        var saved = Latest(repo);
+        Assert.Equal("now run the fit", saved.Topic);
+        Assert.Contains("- tidy the training config\n- now run the fit\n\n", saved.Summary);
+        Assert.DoesNotContain("system-reminder", saved.Summary);
+    }
+
+    [Fact]
     public void A_payload_folder_that_no_longer_exists_falls_back_to_the_transcript_folder()
     {
         using var repo = NewRepo();

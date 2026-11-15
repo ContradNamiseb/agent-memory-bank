@@ -203,7 +203,10 @@ internal static partial class ClaudeTranscript
             {
                 case "tool_result":
                     return null;
-                case "text" when Text(block, "text") is { Length: > 0 } text:
+                // The client can put its own text in the user's list, such as the
+                // reminder that opens a session started with context: drop that
+                // block only, or it hides the request (first) or joins it (after).
+                case "text" when Text(block, "text") is { Length: > 0 } text && !InjectedTurnRegex().IsMatch(text):
                     texts.Add(text);
                     break;
             }
