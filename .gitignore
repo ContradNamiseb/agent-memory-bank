@@ -13,6 +13,9 @@ memory.db
 memory.db-wal
 memory.db-shm
 
+# `hook handoff` keeps its log and per-session stamps beside the database.
+hook-state/
+
 # Project-specific configuration and notes: never tracked, never pushed.
 local/
 memory-bank.local.json

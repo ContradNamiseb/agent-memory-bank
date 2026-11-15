@@ -90,9 +90,14 @@ internal static class Program
               verify [--id N] [--db PATH]
                      Re-check that the code each note cites still says what it says.
 
-              hook <session-start|recall> [--db PATH]
-                     Claude Code hook runner (SessionStart injects latest handoff;
-                     UserPromptSubmit reads stdin JSON and injects strict identifier matches).
+              hook <session-start|recall|handoff> [--db PATH]
+                     Claude Code hook runner, reading the hook's JSON on stdin. session-start
+                     (SessionStart) injects the latest handoff for this repository; recall
+                     (UserPromptSubmit) injects strict identifier matches; handoff (PreCompact)
+                     saves a handoff from the session transcript.
+              hook handoff [--mode force|threshold] [--percent N]
+                     force (default) saves every time; threshold saves at N% (default 95) of
+                     autoCompactWindow, at most every 15 minutes per session.
 
               serve  [--db PATH] [--settings PATH]
                      Run as an MCP stdio server exposing 9 tools (memory_search, memory_get,
@@ -464,7 +469,7 @@ internal static class Program
     {
         var subcommand = args.FirstOrDefault();
         if (subcommand is null || subcommand.StartsWith('-'))
-            return Fail("usage: hook <session-start|recall> [--db PATH]");
+            return Fail("usage: hook <session-start|recall|handoff> [--db PATH]");
 
         var options = CommandLine.Parse(args[1..]);
         ApplySettings(options);
@@ -472,7 +477,8 @@ internal static class Program
         {
             "session-start" => HookRunner.RunSessionStart(options.Db),
             "recall" => HookRunner.RunRecall(options.Db),
-            _ => Fail($"unknown hook subcommand '{subcommand}' (expected 'session-start' or 'recall')"),
+            "handoff" => HookRunner.RunHandoff(options.Db, options.HandoffMode, options.Percent),
+            _ => Fail($"unknown hook subcommand '{subcommand}' (expected 'session-start', 'recall' or 'handoff')"),
         };
     }
 

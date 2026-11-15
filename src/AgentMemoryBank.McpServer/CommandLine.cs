@@ -44,6 +44,12 @@ internal sealed record CommandLine
     public string? Settings { get; private init; }
     public HandoffScope Scope { get; private init; } = HandoffScope.Repo;
 
+    /// <summary>When <c>hook handoff</c> saves; force unless <c>--mode threshold</c>.</summary>
+    public AutoHandoffMode HandoffMode { get; private init; } = AutoHandoffMode.Force;
+
+    /// <summary>Context occupancy, in percent, at which threshold mode saves.</summary>
+    public int Percent { get; private init; } = 95;
+
     /// <summary>Directory whose git checkout a handoff is recorded from or checked against.</summary>
     public string Cwd { get; private init; } = Environment.CurrentDirectory;
 
@@ -82,6 +88,8 @@ internal sealed record CommandLine
                 case "--confidence": options = options with { Confidence = ParseConfidence(Next(arg)) }; break;
                 case "--scope": options = options with { Scope = ParseScope(Next(arg)) }; break;
                 case "--cwd": options = options with { Cwd = Next(arg) }; break;
+                case "--mode": options = options with { HandoffMode = ParseHandoffMode(Next(arg)) }; break;
+                case "--percent": options = options with { Percent = int.Parse(Next(arg)) }; break;
                 case "--id": options = options with { Id = long.Parse(Next(arg)) }; break;
                 case "--tags":
                     options.Tags.AddRange(Next(arg).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
@@ -116,6 +124,12 @@ internal sealed record CommandLine
             ? scope
             : throw new ArgumentException(
                 $"unknown scope '{value}' (expected {string.Join(", ", Enum.GetNames<HandoffScope>()).ToLowerInvariant()})");
+
+    private static AutoHandoffMode ParseHandoffMode(string value) =>
+        Enum.TryParse<AutoHandoffMode>(value, ignoreCase: true, out var mode)
+            ? mode
+            : throw new ArgumentException(
+                $"unknown mode '{value}' (expected {string.Join(", ", Enum.GetNames<AutoHandoffMode>()).ToLowerInvariant()})");
 
     private static NoteKind ParseKind(string value) =>
         Enum.TryParse<NoteKind>(value, ignoreCase: true, out var kind)
