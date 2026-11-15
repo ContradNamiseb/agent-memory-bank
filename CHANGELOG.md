@@ -5,6 +5,7 @@ All notable user-visible changes to `agent-memory-bank` are documented in this f
 ## Unreleased
 
 - **Context occupancy ignores subagent usage and half-written lines:** `hook handoff` measured occupancy from the last transcript line that mentioned `cache_read_input_tokens`. That line can be a subagent's result, which carries the subagent's usage outside `message`, or a line still being written. Either read as 0%, so threshold mode skipped a save it was due and a PreCompact handoff straight after a subagent call recorded 0%. It now walks back to the newest line that is the client's own usage block.
+- **Handoffs keep requests sent with an attachment:** Claude Code stores a request sent with an image as a list of blocks, not a string. `hook handoff` dropped those requests, so a handoff could be named after an earlier one. It now takes their text, and skips the client's own text stored the same way: `[Request interrupted by user]` notes, reminders, and the `isMeta` lists that hold a skill's body or an image's path.
 
 ## 0.0.4
 

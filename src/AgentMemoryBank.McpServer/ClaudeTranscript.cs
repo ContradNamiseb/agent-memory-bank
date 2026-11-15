@@ -27,10 +27,10 @@ internal static partial class ClaudeTranscript
     private static readonly HashSet<string> EditTools = new(StringComparer.Ordinal) { "Edit", "Write", "NotebookEdit" };
 
     // Turns the client records as "user" that the user did not type: slash
-    // commands and their output, reminders, and background-task notifications.
-    // A session that ends on a notification would otherwise name its handoff
-    // "<task-notification> <task-id>...".
-    [GeneratedRegex(@"^\s*<(command-name|local-command|system-reminder|task-notification)")]
+    // commands and their output, reminders, background-task notifications and
+    // the note an interrupted request leaves. A session that ends on a
+    // notification would otherwise name its handoff "<task-notification> <task-id>...".
+    [GeneratedRegex(@"^\s*(<(command-name|local-command|system-reminder|task-notification)|\[Request interrupted by user)")]
     private static partial Regex InjectedTurnRegex();
 
     /// <summary>
@@ -114,8 +114,8 @@ internal static partial class ClaudeTranscript
                 {
                     // A compact summary is the earlier conversation replayed as a
                     // user turn; taking it as the latest request misnames the handoff.
-                    case "user" when Text(message, "content") is { Length: > 0 } request &&
-                                     !IsTrue(record, "isCompactSummary") &&
+                    case "user" when !IsTrue(record, "isCompactSummary") &&
+                                     TypedText(record, message) is { Length: > 0 } request &&
                                      !InjectedTurnRegex().IsMatch(request):
                         requests.Add(request);
                         break;
@@ -161,6 +161,40 @@ internal static partial class ClaudeTranscript
         return full.StartsWith(claudeTemp, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal) ||
                full.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
                    .Any(segment => segment.Equals("scratchpad", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// The text of a "user" turn: its content when that is a string, else its
+    /// text blocks, as when an image is attached. A list holding a tool result
+    /// is the client answering a tool call, and a list flagged isMeta is text
+    /// the client added, such as a skill's body or an attachment's path. A
+    /// string flagged isMeta is kept: scheduled and loop prompts and messages
+    /// from other sessions arrive that way, and they are the session's work.
+    /// </summary>
+    private static string? TypedText(JsonElement record, JsonElement message)
+    {
+        if (!message.TryGetProperty("content", out var content))
+            return null;
+        if (content.ValueKind == JsonValueKind.String)
+            return content.GetString();
+        if (content.ValueKind != JsonValueKind.Array || IsTrue(record, "isMeta"))
+            return null;
+
+        var texts = new List<string>();
+        foreach (var block in content.EnumerateArray())
+        {
+            if (block.ValueKind != JsonValueKind.Object)
+                continue;
+            switch (Text(block, "type"))
+            {
+                case "tool_result":
+                    return null;
+                case "text" when Text(block, "text") is { Length: > 0 } text:
+                    texts.Add(text);
+                    break;
+            }
+        }
+        return texts.Count > 0 ? string.Join('\n', texts) : null;
     }
 
     private static string? Text(JsonElement element, string name) =>

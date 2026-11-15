@@ -65,6 +65,35 @@ public class HandoffHookTests
     }
 
     [Fact]
+    public void A_request_sent_with_an_image_counts_and_client_written_turns_do_not()
+    {
+        using var repo = NewRepo();
+        var transcript = WriteTranscript(repo, repo.RepoDirectory, promptTokens: 100,
+            User("first ask"),
+            // A scheduled prompt arrives as an isMeta string: the session's work, kept.
+            new { type = "user", isMeta = true, message = new { role = "user", content = "Scheduled check: the agora inbox" } },
+            // An attachment turns the content into a list of blocks.
+            UserBlocks(new { type = "image", source = new { type = "base64", media_type = "image/png", data = "iVBORw0K" } },
+                       new { type = "text", text = "why does the fit drift here?" }),
+            // Written by the client in the same list form: an interruption note, a
+            // reminder, and isMeta lists such as a skill's body or an image's path.
+            UserBlocks(new { type = "text", text = "[Request interrupted by user for tool use]" }),
+            UserBlocks(new { type = "text", text = "<system-reminder> The user started a background task </system-reminder>" }),
+            new { type = "user", isMeta = true, message = new { role = "user", content = new object[] { new { type = "text", text = "Base directory for this skill: C:/skills/x" } } } },
+            new { type = "user", isMeta = true, message = new { role = "user", content = new object[] { new { type = "text", text = "[Image: source: C:/tmp/shot.png]" } } } });
+
+        Run(repo, AutoHandoffMode.Force, Payload(transcript, repo.RepoDirectory, "session-3"));
+
+        var saved = Latest(repo);
+        Assert.Equal("why does the fit drift here?", saved.Topic);
+        Assert.Contains("- first ask\n- Scheduled check: the agora inbox\n- why does the fit drift here?\n\n", saved.Summary);
+        Assert.DoesNotContain("interrupted", saved.Summary);
+        Assert.DoesNotContain("system-reminder", saved.Summary);
+        Assert.DoesNotContain("Base directory", saved.Summary);
+        Assert.DoesNotContain("Image: source", saved.Summary);
+    }
+
+    [Fact]
     public void A_payload_folder_that_no_longer_exists_falls_back_to_the_transcript_folder()
     {
         using var repo = NewRepo();
@@ -222,6 +251,9 @@ public class HandoffHookTests
 
     private static object User(string content) =>
         new { type = "user", message = new { role = "user", content } };
+
+    private static object UserBlocks(params object[] blocks) =>
+        new { type = "user", message = new { role = "user", content = blocks } };
 
     private static object Assistant(string text, params object[] tools) =>
         new
