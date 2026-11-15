@@ -375,12 +375,12 @@ handoffs. Every search result carries a citation, and every write demands one:
 | `memory_handoff_list(limit?, agent?, scope?, working_directory?)` | Continuity | List past session handoffs, each with the branch and commit it was written on |
 
 `kind` and `confidence` are enums in the schema. Every call passes through an
-argument guard (`ToolArgumentGuard`, shared verbatim with AgoraMCP) that maps
-the names models reach for (`claim` → `claims`, `message` → `body`,
-`threadId` → `thread_id`), matches enum values ignoring case, and turns
-anything still wrong into an error carrying the tool's signature. Errors on
-unknown ids, repos and tags list the valid ones. Results are labelled text,
-not JSON.
+argument guard (`ToolArgumentGuard`, which started as a copy of AgoraMCP's and
+has its own alias table since) that maps the names models reach for
+(`maxChars` → `max_chars`, `claim` → `claims`, `q` → `query`), matches enum
+values ignoring case, and turns anything still wrong into an error carrying
+the tool's signature. Errors on unknown ids, repos and tags list the valid
+ones. Results are labelled text, not JSON.
 
 ---
 
