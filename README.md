@@ -33,9 +33,8 @@ agent re-derives, badly, at the start of every session.
 
 ## Requirements
 
-- **Windows.** That is the only platform this has been run on, and the only one
-  it is currently supported on. Mac and Linux are intended and will come later;
-  see below for what is already in place for them.
+- **Windows, Linux or macOS.** Every push runs the test suite and a publish on
+  all three. Day-to-day use so far has been on Windows only; see below.
 - .NET SDK 10 (developed against 10.0.302)
 - git on the PATH
 - Three NuGet dependencies, all Microsoft- or Anthropic-published:
@@ -74,13 +73,21 @@ dotnet publish src/AgentMemoryBank.McpServer -c Release -o publish
 
 That produces `publish/agent-memory-bank.exe` on Windows and
 `publish/agent-memory-bank` on Linux and macOS. To re-publish while
-agent sessions are running it, use `pwsh -File publish.ps1` instead: it
-publishes into `releases/<timestamp>/` and points a `publish` link at it
-(junction on Windows, symlink on Linux/macOS), so running servers keep going,
-new launches get the new build, and nothing has to be killed. Never
-`taskkill /IM` the server: some clients (OpenCode) do not
-respawn a dead MCP server. It is not on your PATH, so every
-command below is written against the full path to it — substitute your own.
+agent sessions are running it, use the publish script instead:
+
+```bash
+sh publish.sh                  # Linux and macOS
+pwsh -File publish.ps1         # Windows
+```
+
+Both publish into `releases/<timestamp>/` and point a `publish` link at it
+(a symlink on Linux and macOS, a junction on Windows), so running servers keep
+going, new launches get the new build, and nothing has to be killed. Never
+kill the server by name (`taskkill /IM`, `pkill`): some clients (OpenCode) do
+not respawn a dead MCP server. Old releases are pruned only when nothing is
+using them, which `publish.sh` checks with `lsof`; without `lsof` it keeps them
+all. It is not on your PATH, so every command below is written against the
+full path to it — substitute your own.
 
 Publish on the machine you will run it from. The launcher is native to whatever
 platform built it, so a `publish/` folder copied from one OS to another will not
@@ -90,12 +97,13 @@ start. To skip the launcher entirely, run the assembly directly:
 dotnet /full/path/to/publish/agent-memory-bank.dll serve
 ```
 
-**On Mac and Linux this is untested.** Nothing is known to be wrong with it —
-`agent-memory-bank.dll` is IL rather than a Windows library, git is invoked off
-the `PATH` the same way on every platform, and the native SQLite for linux-x64,
-linux-arm64, osx-x64 and osx-arm64 already ships in `publish/runtimes/`. But
-"should work" is not "does work", and nobody has run `dotnet test` on either
-yet. If you try it, the results are worth an issue whichever way they go.
+**On Linux and macOS, CI is the evidence so far.** Every push runs
+`dotnet test` and `publish.sh` on Ubuntu and macOS, then runs the published
+binary and a hook. Nothing in it depends on the platform: the hooks are
+subcommands of the binary, not shell scripts; git is invoked off the `PATH`;
+and the native SQLite for linux-x64, linux-arm64, osx-x64 and osx-arm64 ships
+in `publish/runtimes/`. Day-to-day use has been on Windows, though, so if you
+run it on Linux or macOS, the results are worth an issue either way.
 
 If you only want to try it out, you can skip this and go through the SDK
 instead — same commands, with `--` separating dotnet's arguments from the
@@ -267,39 +275,53 @@ populated store is a real "not recorded", not a broken connection.
 
 ### 6. Or skip the asking entirely (Claude Code)
 
-An instruction competes with everything else in the prompt. Two native hook
-subcommands make recall happen automatically on Windows, macOS, and Linux
-without spawning a shell wrapper:
+An instruction competes with everything else in the prompt. Three hook
+subcommands of the binary make the store work without being asked, the same
+way on Windows, macOS and Linux, with no shell or script in between:
 
 | command | event | what it does |
 |---|---|---|
 | `agent-memory-bank hook session-start` | `SessionStart` | Injects the most recent handoff for this repository, so a new session opens knowing where the last one stopped, with a warning first if it was written on another branch, commit or worktree. |
 | `agent-memory-bank hook recall` | `UserPromptSubmit` | Pulls identifiers out of the prompt, searches, and injects any matching notes. |
+| `agent-memory-bank hook handoff` | `PreCompact` | Saves a handoff from the session transcript before the context is compacted: the recent requests, where the session had got to, the files it edited, and the checkout of the session's folder. |
 
-Run either the native binary directly **or** the wrapper scripts shipped in
-`publish/hooks/` (copied with each `publish.ps1` release) — avoid pointing
-`settings.json` at the source `hooks/` folder in the working tree so updates stay
-aligned with the published binary.
-
-Option A — Native command (recommended; use `agent-memory-bank` without `.exe`
-on Linux and macOS) in `~/.claude/settings.json`:
+Point `~/.claude/settings.json` at the published binary
+(`publish/agent-memory-bank` on Linux and macOS, `publish/agent-memory-bank.exe`
+on Windows):
 
 ```json
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "C:/path/to/publish/agent-memory-bank.exe",
+      { "hooks": [{ "type": "command", "command": "/path/to/publish/agent-memory-bank",
                     "args": ["hook", "session-start"] }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "C:/path/to/publish/agent-memory-bank.exe",
+      { "hooks": [{ "type": "command", "command": "/path/to/publish/agent-memory-bank",
                     "args": ["hook", "recall"] }] }
+    ],
+    "PreCompact": [
+      { "hooks": [{ "type": "command", "command": "/path/to/publish/agent-memory-bank",
+                    "args": ["hook", "handoff"], "timeout": 120 }] }
     ]
   }
 }
 ```
 
-Option B — PowerShell wrappers from `publish/hooks/` in `~/.claude/settings.json`:
+`hook handoff` saves every time it runs. With `--mode threshold` it saves only
+once the last request filled `--percent` (default 95) of the context window,
+and at most every 15 minutes per session; that mode suits `UserPromptSubmit`.
+The window is `autoCompactWindow` from Claude Code's `settings.json` (in
+`CLAUDE_CONFIG_DIR`, else `~/.claude`), else 200,000 tokens. The checkout it
+records is the session's folder from the hook input, else the last folder in
+the transcript when that one no longer exists. It writes `hook-state/handoff.log`
+beside the database, which is where to look when a handoff you expected is
+missing.
+
+For setups that can only run PowerShell scripts, `publish/hooks/` has wrappers
+for `session-start` and `recall` (copied with each release). Point
+`settings.json` at that copy, not the `hooks/` folder in the working tree, so
+the wrapper and the binary change together:
 
 ```json
 {
@@ -318,10 +340,9 @@ Option B — PowerShell wrappers from `publish/hooks/` in `~/.claude/settings.js
 }
 ```
 
-Both exit with status `0` and emit nothing on any failure or uninitialized database:
-a hook that breaks session start is worse than no hook. The wrappers in
-`publish/hooks/` (`memory-session-start.ps1` and `memory-recall.ps1`) forward
-directly to those native subcommands for setups that invoke PowerShell scripts.
+Every hook exits with status `0` and emits nothing on any failure or
+uninitialized database, and none of them creates a database: a hook that breaks
+session start or compaction is worse than no hook.
 
 Two deliberate choices in `hook recall` are worth knowing, because both
 were wrong in the first draft and testing caught them:
@@ -500,9 +521,11 @@ src/AgentMemoryBank.Core/        class library
   Models/                        Note, Chunk, SearchResult
   Indexing/                      git scanning, Phase A indexer, chunkers
   Verification/                  evidence anchors and staleness resolution
-src/AgentMemoryBank.McpServer/   the executable: index / search / stats / serve
+  Continuity/                    git checkout capture and handoff lookup
+src/AgentMemoryBank.McpServer/   the executable: CLI, Claude Code hooks, MCP server
 test/AgentMemoryBank.Tests/      xUnit
-reference/prototype-js/          the JS spike this was ported from, kept for diffing
+hooks/                           PowerShell wrappers for the session-start and recall hooks
+publish.sh, publish.ps1          publish behind a link without stopping running servers
 ```
 
 ## Everything stays on your machine
