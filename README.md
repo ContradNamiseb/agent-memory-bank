@@ -1,53 +1,94 @@
 # agent-memory-bank
 
-A local SQLite store of durable project knowledge, exposed to any agent over
-MCP. Built in-house, in C# on .NET 10, so there is nothing to trust but code
-that has actually been read.
+A memory that your coding agents share, and that outlives the session that
+wrote it. It is one SQLite file on your machine, served to any agent over MCP.
 
-Everything it learns stays on the machine that runs it. The index, the notes,
-and the configuration naming your repositories are all untracked — this
-repository is the tool, never its contents.
+It keeps three things:
 
-## The problem it solves
+- **Notes.** Findings the code does not state: why a constant has the value it
+  has, what a default silently does, what an earlier attempt got wrong. Every
+  note must cite evidence (a `repo/path:line`, a commit, or a command someone
+  can re-run), so the store does not fill up with guesses.
+- **Handoffs.** A snapshot of where a session stopped: what was done, what is
+  next, which files, and which git checkout. The next session, or a different
+  agent, continues from it.
+- **An index of your source.** The tracked files of the repositories you point
+  it at, split into chunks and full-text searchable. It is there so that notes
+  can cite real lines and be re-checked later.
 
-Not context-window size. A few hundred source files already fit in a large
-context, and will for a while, so retrieval-to-beat-the-limit is the *weakest*
-reason to build this.
+Nothing leaves your machine. There is no sync, no telemetry and no network
+call.
 
-The real loss is **findings that die with the session**. The shape of them is
-always the same:
+## Platform status
 
-- A constant that was *fitted* rather than chosen, where nothing records which
-  measurement produced it or how to redo the fit — so the next person edits it
-  by eye.
-- A library function whose documented behaviour and actual behaviour differ,
-  discovered once by reading the source.
-- A tool whose destructive flag defaults to *on*, with the cleanup outside the
-  error handler, so a failed run destroys its own inputs.
-- A limit that silently discards work when exceeded, with no error and no log
-  line, so the failure shows up much later as missing data.
+| Platform | Status |
+|---|---|
+| Windows | Tested. This is where it is used every day. |
+| Linux, macOS | CI builds, tests and publishes it on Ubuntu and macOS on every push, then runs the published program. Nobody has used it day to day there yet, so the steps below are our best guess for those systems. They should work. We will test them later; if you get there first, please open an issue with what you find. |
 
-These are *decisions and hazards*, not code. Grep cannot find them because they
-are written down nowhere. That is the thing worth storing — and the thing an
-agent re-derives, badly, at the start of every session.
+## Set up
 
-## Requirements
+You need the [.NET SDK 10](https://dotnet.microsoft.com/download) and `git`.
+Check with `dotnet --version` (it should print `10.0.` something) and
+`git --version`.
 
-- **Windows, Linux or macOS.** Every push runs the test suite and a publish on
-  all three. Day-to-day use so far has been on Windows only; see below.
-- .NET SDK 10 (developed against 10.0.302)
-- git on the PATH
-- Three NuGet dependencies, all Microsoft- or Anthropic-published:
-  `Microsoft.Data.Sqlite` (bundles a prebuilt SQLite with FTS5, so there is no
-  compiler and no native build step), `ModelContextProtocol` for the server,
-  and `Microsoft.Extensions.Hosting` to host it
+### The short way: let an agent do it
 
-## Getting started
+Clone the repository:
 
-### 1. Point it at your repositories
+```bash
+git clone https://github.com/ContradNamiseb/agent-memory-bank.git
+```
 
-Copy `memory-bank.local.json.example` to `memory-bank.local.json`. It is
-gitignored, and it is the only place your paths live:
+Then give your agent the path and this prompt:
+
+> Set up agent-memory-bank for me. It is cloned at `<path>`. Follow the
+> "Set up" section of its README step by step. Ask me which repositories to
+> index, and tell me when I need to restart you.
+
+The numbered steps below are what the agent will do. They are also the manual
+route.
+
+### 1. Build it
+
+Run this from the clone's folder.
+
+Windows:
+
+```bash
+powershell -ExecutionPolicy Bypass -File publish.ps1
+```
+
+Linux and macOS:
+
+```bash
+sh publish.sh
+```
+
+The script builds into `releases/<timestamp>/` and points a `publish` link at
+that folder. The program is now:
+
+- Windows: `publish/agent-memory-bank.exe`
+- Linux and macOS: `publish/agent-memory-bank`
+
+Every later step uses the **full path** to that file. The examples below write
+it as `/path/to/agent-memory-bank/publish/agent-memory-bank`; on Windows use
+your own path ending in `.exe`, with forward slashes
+(`C:/path/to/agent-memory-bank/publish/agent-memory-bank.exe`).
+
+Check it: `publish/agent-memory-bank help` prints the list of commands.
+
+Two things to know:
+
+- Leave the build inside the clone. The program finds its settings and its
+  database by walking up to the folder that holds `AgentMemoryBank.slnx`.
+- Do not start the server with `dotnet run`. It rebuilds on every launch, and
+  an MCP client reads that delay as a server that failed to start.
+
+### 2. Say which repositories to index
+
+Copy `memory-bank.local.json.example` to `memory-bank.local.json` in the
+clone's folder, and edit it:
 
 ```json
 {
@@ -56,193 +97,91 @@ gitignored, and it is the only place your paths live:
 }
 ```
 
-Every setting can also come from the environment, which is handy for one-off
-runs: `MEMORY_BANK_REPO_ROOT`, `MEMORY_BANK_REPOS`, `MEMORY_BANK_DB`,
-`MEMORY_BANK_SETTINGS`.
+`repoRoot` is the folder that holds your repositories. `repos` are the names of
+the folders inside it that you want indexed. Use forward slashes on Windows
+too. The example file lists the other settings.
 
-### 2. Publish
-
-Publish once, then point everything — your own shell and every MCP client — at
-the produced executable. Launching the server through `dotnet run` instead makes
-it rebuild on each start, which a client sees as a server that is slow or hung:
-
-```bash
-dotnet test
-dotnet publish src/AgentMemoryBank.McpServer -c Release -o publish
-```
-
-That produces `publish/agent-memory-bank.exe` on Windows and
-`publish/agent-memory-bank` on Linux and macOS. To re-publish while
-agent sessions are running it, use the publish script instead:
-
-```bash
-sh publish.sh                  # Linux and macOS
-pwsh -File publish.ps1         # Windows
-```
-
-Both publish into `releases/<timestamp>/` and point a `publish` link at it
-(a symlink on Linux and macOS, a junction on Windows), so running servers keep
-going, new launches get the new build, and nothing has to be killed. Never
-kill the server by name (`taskkill /IM`, `pkill`): some clients (OpenCode) do
-not respawn a dead MCP server. Old releases are pruned only when nothing is
-using them, which `publish.sh` checks with `lsof`; without `lsof` it keeps them
-all. It is not on your PATH, so every command below is written against the
-full path to it — substitute your own.
-
-Publish on the machine you will run it from. The launcher is native to whatever
-platform built it, so a `publish/` folder copied from one OS to another will not
-start. To skip the launcher entirely, run the assembly directly:
-
-```bash
-dotnet /full/path/to/publish/agent-memory-bank.dll serve
-```
-
-**On Linux and macOS, CI is the evidence so far.** Every push runs
-`dotnet test` and `publish.sh` on Ubuntu and macOS, then runs the published
-binary and a hook. Nothing in it depends on the platform: the hooks are
-subcommands of the binary, not shell scripts; git is invoked off the `PATH`;
-and the native SQLite for linux-x64, linux-arm64, osx-x64 and osx-arm64 ships
-in `publish/runtimes/`. Day-to-day use has been on Windows, though, so if you
-run it on Linux or macOS, the results are worth an issue either way.
-
-If you only want to try it out, you can skip this and go through the SDK
-instead — same commands, with `--` separating dotnet's arguments from the
-tool's:
-
-```bash
-dotnet run --project src/AgentMemoryBank.McpServer -- index -v
-dotnet run --project src/AgentMemoryBank.McpServer -- search "some_identifier"
-dotnet run --project src/AgentMemoryBank.McpServer -- stats
-```
-
-That is fine for a look around. Publish before wiring up a client, though:
-`dotnet run` rebuilds on every launch, and an MCP client reads that delay as a
-server that failed to start.
+This file is gitignored. It is the only place your paths are written down.
 
 ### 3. Build the index
 
 ```bash
-cd publish
-
-# Phase A: index tracked, non-vendored source files. Incremental by content hash.
-./agent-memory-bank index -v
-./agent-memory-bank index --full        # re-chunk everything
-
-# Phase B: mine commit messages for historical rationale and decisions.
-./agent-memory-bank mine-git -v
-
-./agent-memory-bank stats
+publish/agent-memory-bank index -v
+publish/agent-memory-bank mine-git
+publish/agent-memory-bank stats
 ```
 
-Re-run `index` whenever you want; it hashes first and skips what has not
-changed, so a few hundred files take about a second.
+- `index` reads the tracked files of each repository. It skips files that have
+  not changed, so you can re-run it whenever you like.
+- `mine-git` turns the commit messages that explain a decision into notes.
+- `stats` should now list each repository with its file and chunk counts.
 
-When configured repositories share git history (such as branches or worktrees),
-running `mine-git` attributes shared commits to each repository via tags on the
-live note without duplicating or re-mining superseded commits.
+The database is `memory.db` in the clone's folder.
 
-Everything the server exposes over MCP also works from the shell, which is the
-quickest way to confirm the store holds what you think it does:
+### 4. Connect your agents
+
+The server is the same program, started as `agent-memory-bank serve`. Register
+it in every agent client you use. They all read the same database, so a note
+written from one agent is there when another one asks.
+
+**Claude Code** (one command):
 
 ```bash
-# BM25 over notes and chunks; notes ranked first.
-./agent-memory-bank search "some_identifier"
-./agent-memory-bank search "checkpoint resume" --full
-
-# Inspect one note or chunk in full, with line numbers.
-./agent-memory-bank get note 1
-./agent-memory-bank get chunk 1220
-
-./agent-memory-bank handoff latest
+claude mcp add agent-memory-bank --scope user -- /path/to/agent-memory-bank/publish/agent-memory-bank serve
 ```
 
-### 4. Wire it into your agent
+Then open `~/.claude.json`, find the `agent-memory-bank` entry under
+`mcpServers`, and add `"alwaysLoad": true` to it. Without that, Claude Code
+loads only the tool names at startup and has to look each tool up before it can
+call it. `claude mcp list` shows whether the server connected.
 
-The server speaks MCP over stdio, so any client that can launch a command can
-use it. Give each one the **absolute** path to the published executable and
-`serve` (optionally `--db PATH` and `--settings PATH`; unknown options are
-rejected).
-
-The examples below use a Windows path. On Linux and macOS use the extensionless
-`agent-memory-bank` instead, or set `"command": "dotnet"` with
-`"args": ["/path/to/publish/agent-memory-bank.dll", "serve"]`.
-
-#### Claude Code
-
-One command, no file to edit. `--scope user` makes it available in every
-project rather than only the current one:
-
-```bash
-claude mcp add memory-bank --scope user -- C:/path/to/publish/agent-memory-bank.exe serve
-```
-
-Verify it connected — the server should be listed, and its tools appear as
-`memory_*`:
-
-```bash
-claude mcp list
-```
-
-Claude Code reads MCP configuration once at startup, so restart any session
-that was already open before adding it.
-
-#### Google Antigravity
-
-Add to `~/.gemini/config/mcp_config.json`:
+**Most other clients** take this JSON shape:
 
 ```json
 {
   "mcpServers": {
-    "memory-bank": {
-      "command": "C:/path/to/publish/agent-memory-bank.exe",
+    "agent-memory-bank": {
+      "command": "/path/to/agent-memory-bank/publish/agent-memory-bank",
       "args": ["serve"]
     }
   }
 }
 ```
 
-#### VS Code and GitHub Copilot
+| Client | File | Notes |
+|---|---|---|
+| Antigravity | `~/.gemini/config/mcp_config.json` | as above |
+| Cursor | `~/.cursor/mcp.json` | as above |
+| GitHub Copilot CLI | `~/.copilot/mcp-config.json` | add `"type": "stdio"` and `"tools": ["*"]` to the entry |
+| Kimi Code | `~/.kimi-code/mcp.json` | add `"transport": "stdio"` to the entry |
+| VS Code | `.vscode/mcp.json`, or `mcp.json` in your user profile | the top-level key is `"servers"`, not `"mcpServers"` |
 
-Create `.vscode/mcp.json` in your workspace, or add the same block to your user
-settings to get it everywhere:
+**Codex** (`~/.codex/config.toml`):
 
-```json
-{
-  "servers": {
-    "memory-bank": {
-      "command": "C:/path/to/publish/agent-memory-bank.exe",
-      "args": ["serve"]
-    }
-  }
+```toml
+[mcp_servers.agent-memory-bank]
+command = '/path/to/agent-memory-bank/publish/agent-memory-bank'
+args = ["serve"]
+```
+
+**OpenCode** (`~/.config/opencode/opencode.jsonc`, under `"mcp"`):
+
+```jsonc
+"agent-memory-bank": {
+  "type": "local",
+  "command": ["/path/to/agent-memory-bank/publish/agent-memory-bank", "serve"],
+  "enabled": true
 }
 ```
 
-#### Cursor and Windsurf
+Restart each client afterwards. They read their MCP configuration once, at
+startup.
 
-Add to `.cursor/mcp.json` or `.codeium/windsurf/mcp_config.json`:
+### 5. Tell your agents to use it
 
-```json
-{
-  "mcpServers": {
-    "memory-bank": {
-      "command": "C:/path/to/publish/agent-memory-bank.exe",
-      "args": ["serve"]
-    }
-  }
-}
-```
-
-Configuring more than one client is the point rather than a nuisance: they read
-the same database, so a note written from Claude Code is there when Antigravity
-next asks.
-
-### 5. Tell the agent to use it
-
-Registering the server makes the tools *available*. It does not make an agent
-*reach for them*, and an agent that never asks is the same as an empty store.
-
-Paste this at the top of your `CLAUDE.md`, `AGENTS.md`, or whatever instruction
-file your client reads:
+Registering the server makes the tools available. It does not make an agent
+reach for them. Paste this into the instruction file your client reads
+(`CLAUDE.md`, `AGENTS.md`, or its equivalent):
 
 ```markdown
 ## Memory bank first
@@ -273,318 +212,192 @@ first.
 populated store is a real "not recorded", not a broken connection.
 ```
 
-### 6. Or skip the asking entirely (Claude Code)
+### 6. Claude Code only: make it automatic (optional)
 
-An instruction competes with everything else in the prompt. Three hook
-subcommands of the binary make the store work without being asked, the same
-way on Windows, macOS and Linux, with no shell or script in between:
+Three hooks make the store work without anyone asking. Each one is a
+subcommand of the same program, so they behave the same on every platform.
 
-| command | event | what it does |
+| Hook event | Command | What it does |
 |---|---|---|
-| `agent-memory-bank hook session-start` | `SessionStart` | Injects the most recent handoff for this repository, so a new session opens knowing where the last one stopped, with a warning first if it was written on another branch, commit or worktree. |
-| `agent-memory-bank hook recall` | `UserPromptSubmit` | Pulls identifiers out of the prompt, searches, and injects any matching notes. |
-| `agent-memory-bank hook handoff` | `PreCompact` | Saves a handoff from the session transcript before the context is compacted: the recent requests, where the session had got to, the files it edited, and the checkout of the session's folder. |
+| `SessionStart` | `hook session-start` | Shows the newest handoff for this repository, so a new session opens knowing where the last one stopped. |
+| `UserPromptSubmit` | `hook recall` | Finds identifiers in your prompt and adds any notes that match them exactly. |
+| `PreCompact` | `hook handoff` | Saves a handoff from the session transcript before the context is compacted. |
 
-Point `~/.claude/settings.json` at the published binary
-(`publish/agent-memory-bank` on Linux and macOS, `publish/agent-memory-bank.exe`
-on Windows):
+Add this to `~/.claude/settings.json`. If the file already has a `hooks`
+section, merge these entries into it:
 
 ```json
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "/path/to/publish/agent-memory-bank",
+      { "hooks": [{ "type": "command",
+                    "command": "/path/to/agent-memory-bank/publish/agent-memory-bank",
                     "args": ["hook", "session-start"] }] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "/path/to/publish/agent-memory-bank",
+      { "hooks": [{ "type": "command",
+                    "command": "/path/to/agent-memory-bank/publish/agent-memory-bank",
                     "args": ["hook", "recall"] }] }
     ],
     "PreCompact": [
-      { "hooks": [{ "type": "command", "command": "/path/to/publish/agent-memory-bank",
+      { "hooks": [{ "type": "command",
+                    "command": "/path/to/agent-memory-bank/publish/agent-memory-bank",
                     "args": ["hook", "handoff"], "timeout": 120 }] }
     ]
   }
 }
 ```
 
-`hook handoff` saves every time it runs. With `--mode threshold` it saves only
-once the last request filled `--percent` (default 95) of the context window,
-and at most every 15 minutes per session; that mode suits `UserPromptSubmit`.
-The window is `autoCompactWindow` from Claude Code's `settings.json` (in
-`CLAUDE_CONFIG_DIR`, else `~/.claude`), else 200,000 tokens. The checkout it
-records is the session's folder from the hook input, else the last folder in
-the transcript when that one no longer exists. It writes `hook-state/handoff.log`
-beside the database, which is where to look when a handoff you expected is
-missing.
+A hook that fails prints nothing and exits cleanly, so it can never block a
+session. If a handoff you expected is missing, look in
+`hook-state/handoff.log` beside the database.
 
-For setups that can only run PowerShell scripts, `publish/hooks/` has wrappers
-for `session-start` and `recall` (copied with each release). Point
-`settings.json` at that copy, not the `hooks/` folder in the working tree, so
-the wrapper and the binary change together:
+### 7. Check that it works
+
+Open a new session in one of your clients and ask:
+
+> Call `memory_stats` and show me the result.
+
+You should see the same counts that `stats` printed in step 3. If the agent
+says it has no such tool, the client has not been restarted since step 4, or
+the path in its configuration is wrong.
+
+## Using it
+
+Once the instructions from step 5 are in place, agents search the store before
+they investigate and record what they learn. You can also ask directly:
+
+- *"Search the memory bank for `policy_temperature`."*
+- *"Record that in the memory bank."*
+- *"Save a session handoff to the memory bank."* Say this before you switch
+  agents or run out of usage.
+- *"Read the latest handoff from the memory bank and continue."* Say this in
+  the next agent.
+
+A handoff remembers the branch, commit and worktree it was written in. Read
+from a different checkout, it starts with a warning, because "done" in one
+checkout can be false in another.
+
+From a terminal, the same program answers the same questions (shown here
+without the `publish/` path in front):
+
+```bash
+agent-memory-bank search "some_identifier"    # notes first, then source chunks
+agent-memory-bank get note 12                 # one note in full
+agent-memory-bank handoff latest              # where the last session stopped
+agent-memory-bank verify                      # do the notes still match the code?
+agent-memory-bank index                       # pick up changed files
+agent-memory-bank help                        # every command and option
+```
+
+## Updating
+
+```bash
+git pull
+```
+
+Then run the build command from step 1 again. Servers that are already running
+keep the old build until their session ends, and new sessions get the new one.
+Nothing needs to be stopped. Do not kill the server by name (`taskkill /IM`,
+`pkill`): some clients never restart a dead MCP server.
+
+## The tools agents get
+
+| Tool | What it does |
+|---|---|
+| `memory_search` | Searches notes and source chunks. Notes come first, and every hit carries a citation. |
+| `memory_index` | Lists notes one line each, so an agent can pick ids before fetching bodies. |
+| `memory_get` | Returns notes or chunks in full, with line numbers. |
+| `memory_stats` | Says what the store holds, per repository. |
+| `memory_notes_upsert` | The only way to write notes. Evidence is required and checked. |
+| `memory_verify` | Re-checks that the code a note cites still says what the note says. |
+| `memory_handoff_save` | Saves a session handoff, with the git checkout it was written in. |
+| `memory_handoff_latest` | Returns the newest handoff for this repository. |
+| `memory_handoff_list` | Lists past handoffs. |
+
+## Why you can trust what it returns
+
+- **Evidence is required.** A note with nothing behind it is refused, and the
+  refusal says why and shows a correct example.
+- **Nothing is deleted.** A note that turned out wrong is superseded. The old
+  note and the reason it changed are kept, so the same mistake is not made
+  twice.
+- **Stale notes are found.** `verify` re-reads the cited code. If the line only
+  moved, the note is quietly re-anchored. If it changed or is gone, the note is
+  reported as `moved` or `broken`.
+- **Empty means empty.** A search that finds nothing in a populated store means
+  "not recorded", and the tools say when the store has not been indexed at all.
+
+The reasoning behind these rules, and how indexing and verification work, is
+in [docs/design.md](docs/design.md).
+
+## Your data
+
+These files hold your data. All of them are gitignored, so they cannot be
+pushed by accident:
+
+| Path | What it holds |
+|---|---|
+| `memory.db` | The store: your notes, your handoffs and the source index. |
+| `memory-bank.local.json` | The names and paths of your repositories. |
+| `hook-state/` | The hook's log and per-session markers. |
+| `local/` | Scratch space for your own notes. |
+
+**Do not put the database in OneDrive, Dropbox, iCloud or Google Drive.** A
+live store is up to three files that must stay consistent with each other. A
+sync client copies them one at a time and will eventually corrupt the store.
+
+To back the store up or move it, close every agent client and copy
+`memory.db`.
+
+### A second, separate store
+
+To keep another body of knowledge apart from your code (for example, writing
+projects), register the server a second time under another name and give it
+its own files:
 
 ```json
-{
-  "hooks": {
-    "SessionStart": [
-      { "hooks": [{ "type": "command", "command": "powershell",
-                    "args": ["-NoProfile", "-File",
-                             "C:/path/to/publish/hooks/memory-session-start.ps1"] }] }
-    ],
-    "UserPromptSubmit": [
-      { "hooks": [{ "type": "command", "command": "powershell",
-                    "args": ["-NoProfile", "-File",
-                             "C:/path/to/publish/hooks/memory-recall.ps1"] }] }
-    ]
-  }
+"memory-bank-writing": {
+  "command": "/path/to/agent-memory-bank/publish/agent-memory-bank",
+  "args": ["serve", "--db", "/path/to/writing.db",
+           "--settings", "/path/to/writing.memory-bank.json"]
 }
 ```
 
-Every hook exits with status `0` and emits nothing on any failure or
-uninitialized database, and none of them creates a database: a hook that breaks
-session start or compaction is worse than no hook.
+On the command line, the same two options (or the `MEMORY_BANK_DB` and
+`MEMORY_BANK_SETTINGS` environment variables) select that store.
 
-Two deliberate choices in `hook recall` are worth knowing, because both
-were wrong in the first draft and testing caught them:
+## What it deliberately does not do
 
-- **It searches identifiers, not words.** Given `is policy_eval_temp still
-  correct`, it searches `policy_eval_temp` alone. Because the hook takes strict
-  matches only (below), the loosened retry that rescues a wordy query in normal
-  use does not apply here -- so handing it a sentence's worth of ordinary
-  English really does guarantee a miss.
-- **It injects strict matches only.** When you *ask*, a loosened any-term hit
-  is useful -- the store offering the nearest thing it holds. Nobody asked
-  here, so a loose hit is just a note sharing a common word with the prompt,
-  and injecting it would spend tokens on noise every turn.
+- **No embeddings or vector search.** Keyword search is enough for a store
+  this size, and a model would add a download, a runtime and version drift.
+- **No code graph built by an LLM.** ctags and language servers already do
+  that accurately.
+- **No automatic file summaries.** Summaries go stale silently and then get
+  cited as fact.
+- **No sync, export or server mode.** The store is personal and local on
+  purpose.
 
-## The MCP tool surface
-
-Nine tools, across search, durable notes, verification, and cross-agent
-handoffs. Every search result carries a citation, and every write demands one:
-
-| Tool | Category | Purpose |
-| :--- | :--- | :--- |
-| `memory_search(query, repo?, kind?, limit?, max_chars?)` | Search | BM25 over notes and chunks, notes first, every hit cited. Output capped (default 12000 chars); ids that did not fit are listed |
-| `memory_index(repo?, kind?, tag?, include_superseded?, limit?, before_id?)` | Orientation | TSV manifest — id, kind, confidence, chars, tags, one-line claim — so an agent picks ids before fetching bodies |
-| `memory_get(kind, ids, max_chars?)` | Inspection | One or several chunks or notes in full, with line numbers |
-| `memory_stats()` | Inspection | What the store holds, and row counts per repo |
-| `memory_notes_upsert(claims[], evidence[], kinds?[], confidences?[], rationales?[], tags?[], supersedes?[], dry_run?)` | Write | The only note write (replaced `memory_note_add` and `memory_note_supersede`). Evidence is required and checked; a claim already recorded does not fail: same claim + same evidence is *unchanged*, a changed one *supersedes* the old note. Never overwrites |
-| `memory_verify(id?)` | Verification | Re-check that cited code still says what the note says |
-| `memory_handoff_save(agent, topic, summary, next_steps, ..., working_directory?)` | Continuity | Save a session handoff before switching agents or hitting limits. Records the git checkout it was written in |
-| `memory_handoff_latest(agent?, scope?, working_directory?, max_chars?)` | Continuity | The latest handoff for this repository, led by a warning if it was written in a different checkout |
-| `memory_handoff_list(limit?, agent?, scope?, working_directory?)` | Continuity | List past session handoffs, each with the branch and commit it was written on |
-
-`kind` and `confidence` are enums in the schema. Every call passes through an
-argument guard (`ToolArgumentGuard`, which started as a copy of AgoraMCP's and
-has its own alias table since) that maps the names models reach for
-(`maxChars` → `max_chars`, `claim` → `claims`, `q` → `query`), matches enum
-values ignoring case, and turns anything still wrong into an error carrying
-the tool's signature. Errors on unknown ids, repos and tags list the valid
-ones. Results are labelled text, not JSON.
-
----
-
-## Moving a task between agents
-
-Usage limits and context limits both end sessions mid-task. The store is what
-survives them:
-
-1. **Before leaving your current agent (e.g. Antigravity)**:
-   Say: *"Save a session handoff to memory bank with our progress and next steps."*
-   The agent calls `memory_handoff_save` with what was finished, active files, and pending next steps.
-
-2. **When opening your next agent (e.g. Claude Code or VS Code Chat)**:
-   Say: *"Read the latest handoff from memory bank and continue the task."*
-   The incoming agent calls `memory_handoff_latest` via MCP, reads the exact state, and picks up immediately with zero re-prompting.
-
-3. **In Terminal**:
-   You can also check active handoff status anytime:
-   ```bash
-   ./agent-memory-bank handoff latest
-   ```
-
-### A handoff knows which checkout it was written in
-
-"Migration done" is true in one checkout and can be false in the next. So
-`memory_handoff_save` records, from git and never from the agent: the
-repository, worktree, branch, `HEAD` commit, how many paths were uncommitted,
-and whether the branch's commits were pushed. The repository is identified by
-`origin`'s URL (SSH and HTTPS forms match), so another clone of the same
-project is the same repository; without an `origin` it is the git directory
-shared by that repository's worktrees.
-
-`memory_handoff_latest` compares that with where it is being read, and puts
-any difference **before** the handoff:
-
-```text
-WARNING: commit `4f41706` from this handoff does not exist in this checkout. The work it describes may not exist here at all: it was never pushed, or it was made in another clone.
-WARNING: written on `feature-x` @ `4f41706` in `C:\...\wt-a`; you are on `main` @ `a1140d9` in `C:\...\lc0`. Verify before trusting 'done' claims.
-When written, `C:\...\wt-a` had 1 uncommitted path. That work is in no commit, so it exists only in that working tree, if it is there at all.
-```
-
-A missing commit gets its own line because it means more than a moved
-`HEAD`: the work may not exist here at all. When `HEAD` has moved on from the
-handoff's commit, it says whether that commit is included or not.
-
-`latest` and `list` take a scope: `repo` (the default; any worktree of this
-repository), `worktree` (this one only) or `all`. Handoffs saved before
-checkouts were recorded have none, so they show only under `all`, and a
-scoped miss says how many it left out. The checkout is read from the MCP
-server's directory unless the agent passes `working_directory`, which it
-should when it works in a different worktree. On the command line, use
-`--scope` and `--cwd`.
-
----
-
-Notes are the product; the file index exists to ground them. Three rules hold
-the quality line:
-
-**Evidence is mandatory at write time.** A claim needs a `repo/path:line`
-citation, or a command or measurement someone could re-run. This single
-constraint is what stops the store filling with plausible-sounding sludge — a
-claim with nothing behind it is indistinguishable from a guess once the session
-that made it has ended.
-
-**Refusals carry a worked example.** An opaque rejection is how an autonomous
-caller gets stuck retrying the same malformed write. Every refusal returns a
-reason code from a closed set (`missing_evidence`, `unresolvable_anchor`,
-`duplicate_claim`, `claim_not_falsifiable`) plus a correct note to copy.
-
-**Nothing is deleted.** A claim that turned out wrong is superseded, keeping the
-original and the reason it changed — often the more useful fact, because it stops
-the same wrong conclusion being reached twice.
-
-Two more details that matter more than they look:
-
-**The trigger lives in the tool description.** Nothing queries a memory bank
-unless something tells it to, and clients differ in whether they load repository
-instruction files — but every MCP client shows the model its tool descriptions.
-So the instruction to search *before* changing a measured constant or trusting a
-default is written there, not only in a project's own instructions.
-
-**An empty result distinguishes "nothing recorded" from "never indexed."** A
-store that has not been indexed answers every question with silence, and silence
-reads like evidence of absence. The tools say which one it is.
-
-## Staleness
-
-A note describing code that has since changed is worse than no note. But hashing
-the cited file is far too blunt: adding three lines at the top changes the hash
-while leaving the cited code untouched, and if every commit produces a wave of
-false alarms, the alarms get ignored — which is the same as not having them.
-
-So `memory_verify` resolves cheapest-first, and only the last step surfaces:
-
-1. Content hash unchanged — fine, no further work.
-2. Hash changed, but the anchor line is found exactly once — silently re-anchor
-   and update the stored line. This is the common case and is meant to be invisible.
-3. Anchor gone or ambiguous — fall back to the enclosing symbol. Still there,
-   report `moved`; gone too, report `broken`.
-
-The anchor is the **cited line itself** wherever it can serve, and that
-preference is the point rather than a tie-breaker. Anchoring to the explanatory
-comment above a constant would keep matching after someone changed the constant,
-and verification would report the note as fine while the thing it describes had
-moved out from under it. Only when the cited line cannot anchor — blank, trivial
-like `}`, or repeated elsewhere — does the search widen to its neighbours.
-
-Notes mined from commit messages are **unanchored by design**. A commit
-message says which commit a change belongs to, never which line, so their
-evidence is the commit itself (`git show <sha> -- <path>`) and `memory_verify`
-reports them as not anchored. Synthesising a `path:1` citation would pass the
-evidence gate while anchoring every one of them to a licence header, and
-verification would then call them healthy forever — including after the code
-they describe was deleted.
-
-## How Phase A works
-
-`git ls-files` per repository, skipping vendored trees. Hash each file, skip
-unchanged, chunk by language, write `file` + `chunk` + FTS in one transaction
-per repository. Files that leave the repository take their chunks with them.
-Always correct, and fast enough to rerun without thinking about it — a few
-hundred files and a few thousand chunks index in about a second.
-
-Chunking is by language: C++ on function and class boundaries by brace matching
-with strings and comments masked, Python on `def`/`class` by indentation,
-Markdown on headings outside fenced code, textproto and proto on blocks, YAML
-on top-level keys, everything else by non-overlapping line window.
-
-Every chunker test asserts the same invariant: **a chunk's body is exactly the
-lines it claims, and no line is claimed twice**. A citation that points at the
-wrong line is worse than no citation.
-
-## Layout
+## Repository layout
 
 ```
-src/AgentMemoryBank.Core/        class library
-  Database/                      open, schema, FTS5 capability probe, BM25 search
-  Models/                        Note, Chunk, SearchResult
-  Indexing/                      git scanning, Phase A indexer, chunkers
-  Verification/                  evidence anchors and staleness resolution
-  Continuity/                    git checkout capture and handoff lookup
-src/AgentMemoryBank.McpServer/   the executable: CLI, Claude Code hooks, MCP server
-test/AgentMemoryBank.Tests/      xUnit
-hooks/                           PowerShell wrappers for the session-start and recall hooks
-publish.sh, publish.ps1          publish behind a link without stopping running servers
+src/AgentMemoryBank.Core/        the library: database, indexing, verification, handoffs
+src/AgentMemoryBank.McpServer/   the program: command line, hooks, MCP server
+test/AgentMemoryBank.Tests/      xUnit tests
+publish.ps1, publish.sh          build without stopping running servers
+docs/design.md                   why it works the way it does
+ROADMAP.md                       what is planned
+CHANGELOG.md                     what changed
 ```
 
-## Everything stays on your machine
-
-This is the point of the project, not a limitation of the current version.
-
-**The store never leaves the machine it was built on.** There is no sync, no
-export, no server mode, no telemetry, and no call to any remote service. The
-tool is public; the store it builds is not, and there is no code path that
-would move it.
-
-Two reasons, and the second is easier to lose sight of:
-
-- **Privacy.** The index holds verbatim source from private repositories, and
-  the notes hold decisions about that source.
-- **The notes are personal.** A store reflects how one developer works and what
-  they concluded. Merging two of them does not produce a better store — it
-  produces one where you can no longer tell whose judgement you are reading.
-
-By design, none of these are tracked:
-
-| path | why |
-|------|-----|
-| `memory-bank.local.json` | names your repositories and their paths |
-| `memory.db` | the index — verbatim source from private repositories |
-| `local/` | scratch space for project-specific notes |
-
-The split is enforced by `.gitignore` rather than by remembering.
-
-### Do not put the database in a sync folder
-
-OneDrive, Dropbox, iCloud and Google Drive all look like a harmless way to move
-the store between your own machines. They are not. The database runs in WAL
-mode, so a live store is up to three files that must stay mutually consistent —
-`memory.db`, `memory.db-wal`, `memory.db-shm`. A sync client copies them
-independently and on its own schedule, and will eventually capture a main file
-without its matching WAL. That produces a corrupt database, and the corruption
-surfaces long after the sync that caused it.
-
-To move a store deliberately: close every client, then copy the file.
-
-## Deliberately not built
-
-- **Embeddings / vector search.** BM25 over a corpus this size is sufficient.
-  Adding a model means a download, a runtime, and drift between index and model
-  version. Revisit only when you can point at real queries BM25 missed.
-- **An LLM-extracted code graph.** ctags and LSP produce call and definition
-  graphs accurately and for free; an inferred one is a slower, hallucinating
-  version of that. The LLM budget goes to prose rationale instead.
-- **Auto-summarising every file.** Summaries go stale silently and then get
-  cited as fact. Raw text stays the source of truth.
+It depends on three NuGet packages: `Microsoft.Data.Sqlite` and
+`Microsoft.Extensions.Hosting` from Microsoft, and `ModelContextProtocol`, the
+official MCP SDK for C#. SQLite ships prebuilt inside the first one, so there
+is no native build step.
 
 ## Disclaimer
 
-This project was built with **Claude** (Anthropic's Claude Code, Opus 5). The
-design and the decisions behind it are the maintainer's; the implementation was
-written by Claude against that design, and is reviewed by the maintainer.
-
-That review is why the project is in C# rather than the JavaScript it was first
-prototyped in: the rule here is to depend on nothing that has not been read, and
-code the maintainer cannot review fails that rule just as a vendored dependency
-would. Generated code is not exempt from it.
+This project was built with Claude (Anthropic's Claude Code). The design and
+the decisions are the maintainer's. Claude wrote the implementation against
+that design, and the maintainer reviews it. That review is why the project is
+in C#: the rule here is to depend on nothing that has not been read.

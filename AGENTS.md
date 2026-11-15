@@ -5,6 +5,12 @@ Instructions for any coding agent working in this repository. Claude Code reads
 bank section below is identical in both on purpose -- it is the one rule that
 must hold whichever agent is driving, because they share one store.
 
+## If you were asked to set this tool up
+
+Follow the "Set up" section of `README.md` step by step. Ask the user which
+repositories to index before you write `memory-bank.local.json`, and tell them
+to restart their client once the server is registered.
+
 ## Memory bank first
 
 Before investigating anything whose answer was *decided* or *measured* rather
@@ -35,4 +41,6 @@ populated store is a real "not recorded", not a broken connection.
 ## The rest
 
 `CLAUDE.md` carries the working notes for this repository and `PLAN.md` carries
-the design. Both apply here; read `PLAN.md` first.
+the design. Neither is tracked, so a fresh clone has neither. Where they exist,
+both apply; read `PLAN.md` first. `docs/design.md` is the tracked summary of
+the design.
