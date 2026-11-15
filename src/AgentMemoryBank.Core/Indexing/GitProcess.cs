@@ -14,6 +14,10 @@ public static class GitProcess
         var info = new ProcessStartInfo("git")
         {
             WorkingDirectory = workingDirectory,
+            // git must not inherit this process's stdin: under `serve` that is the
+            // client's pipe, which the server is blocked reading, and on Windows
+            // git then hangs at startup until the client's next message.
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -24,6 +28,7 @@ public static class GitProcess
 
         using var process = Process.Start(info)
             ?? throw new InvalidOperationException("could not start git");
+        process.StandardInput.Close();
         var stderrTask = process.StandardError.ReadToEndAsync();
         var stdout = process.StandardOutput.ReadToEnd();
         process.WaitForExit();

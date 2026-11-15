@@ -131,6 +131,10 @@ public static partial class GitCheckout
         var info = new ProcessStartInfo("git")
         {
             WorkingDirectory = workingDirectory,
+            // git must not inherit this process's stdin: under `serve` that is the
+            // client's pipe, which the server is blocked reading, and on Windows
+            // git then hangs at startup until the client's next message.
+            RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
@@ -142,6 +146,7 @@ public static partial class GitCheckout
         {
             using var process = Process.Start(info);
             if (process is null) return null;
+            process.StandardInput.Close();
             // Drain stderr concurrently: a child blocked on a full stderr pipe
             // never exits while stdout is being read to the end.
             var stderr = process.StandardError.ReadToEndAsync();
