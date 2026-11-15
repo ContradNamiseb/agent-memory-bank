@@ -67,13 +67,14 @@ prose across four files that have already drifted once.
 
 Single-machine does not mean single-platform.
 
-- [ ] Run the suite on Linux and macOS. Native SQLite for all four runtimes
-      already ships in `publish/runtimes/`, so this is likely documentation and
-      a CI job rather than code — but "likely" is doing real work there and
-      nobody has checked.
-- [ ] Port the two PowerShell hooks, or document a shell equivalent.
-- [ ] CI on all three platforms.
-- [ ] A first-run path that assumes nothing about the reader's machine.
+- [x] Run the suite on Linux and macOS. CI does, on every push.
+- [x] Port the PowerShell hooks. All three hooks are subcommands of the
+      binary, so nothing needs PowerShell.
+- [x] CI on all three platforms, including a publish and a hook run.
+- [ ] A first-run path that assumes nothing about the reader's machine. The
+      README's "Set up" section is written for this, but it has only been
+      followed on Windows. Follow it on Linux and on macOS, with a real agent
+      client, and fix what breaks.
 
 ### 3. Durability of the one copy that exists
 
