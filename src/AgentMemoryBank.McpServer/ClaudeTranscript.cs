@@ -41,8 +41,9 @@ internal static partial class ClaudeTranscript
     /// runs this on every prompt and a transcript reaches tens of megabytes:
     /// parsing every match doubles the time. The newest match is not always the
     /// one wanted: a subagent's result carries the subagent's usage outside
-    /// <c>message</c>, and the last line can be half-written. So it walks back
-    /// to the newest line that is the client's own usage block.
+    /// <c>message</c>, a message the client makes up carries zeros, and the last
+    /// line can be half-written. So it walks back to the newest line that is a
+    /// real request's usage block.
     /// </summary>
     public static long LastPromptTokens(string path)
     {
@@ -72,14 +73,22 @@ internal static partial class ClaudeTranscript
         return 0;
     }
 
-    /// <summary>The prompt size a record's own usage block gives, or null when it has none.</summary>
-    private static long? PromptTokens(JsonElement record) =>
-        record.ValueKind == JsonValueKind.Object &&
-        record.TryGetProperty("message", out var message) && message.ValueKind == JsonValueKind.Object &&
-        message.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object
-            ? Tokens(usage, "input_tokens") + Tokens(usage, "cache_read_input_tokens") +
-              Tokens(usage, "cache_creation_input_tokens")
-            : null;
+    /// <summary>
+    /// The prompt size a record's own usage block gives, or null when it has
+    /// none. A usage of zeros is none: the client writes one with each message
+    /// it makes up itself ("Prompt is too long", "You've hit your session
+    /// limit", API errors), which are the moments a handoff matters most.
+    /// </summary>
+    private static long? PromptTokens(JsonElement record)
+    {
+        if (record.ValueKind != JsonValueKind.Object ||
+            !record.TryGetProperty("message", out var message) || message.ValueKind != JsonValueKind.Object ||
+            !message.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+            return null;
+        var tokens = Tokens(usage, "input_tokens") + Tokens(usage, "cache_read_input_tokens") +
+                     Tokens(usage, "cache_creation_input_tokens");
+        return tokens > 0 ? tokens : null;
+    }
 
     public static TranscriptSnapshot Read(string path)
     {

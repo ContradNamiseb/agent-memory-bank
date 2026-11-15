@@ -143,8 +143,9 @@ public class HandoffHookTests
     {
         using var repo = NewRepo();
         var transcript = WriteTranscript(repo, repo.RepoDirectory, promptTokens: 960, User("nearly full now"));
-        // A subagent's result carries the subagent's usage, outside message; a
-        // record still being written can stop inside a usage block.
+        // A subagent's result carries the subagent's usage, outside message; the
+        // client's own messages, such as "Prompt is too long", carry a usage of
+        // zeros; a record still being written can stop inside a usage block.
         File.AppendAllLines(transcript,
         [
             JsonSerializer.Serialize(new
@@ -152,6 +153,17 @@ public class HandoffHookTests
                 type = "user",
                 message = new { role = "user", content = new object[] { new { type = "tool_result", content = "done" } } },
                 toolUseResult = new { usage = new { input_tokens = 3, cache_read_input_tokens = 2, cache_creation_input_tokens = 1 } },
+            }),
+            JsonSerializer.Serialize(new
+            {
+                type = "assistant",
+                message = new
+                {
+                    model = "<synthetic>",
+                    role = "assistant",
+                    content = new object[] { new { type = "text", text = "Prompt is too long" } },
+                    usage = new { input_tokens = 0, output_tokens = 0, cache_read_input_tokens = 0, cache_creation_input_tokens = 0 },
+                },
             }),
             "{\"type\":\"assistant\",\"message\":{\"usage\":{\"cache_read_input_tokens\":",
         ]);
