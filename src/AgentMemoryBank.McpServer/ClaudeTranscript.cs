@@ -22,8 +22,11 @@ internal static partial class ClaudeTranscript
 
     private static readonly HashSet<string> EditTools = new(StringComparer.Ordinal) { "Edit", "Write", "NotebookEdit" };
 
-    // Turns the client records as "user" that the user did not type.
-    [GeneratedRegex(@"^\s*<(command-name|local-command|system-reminder)")]
+    // Turns the client records as "user" that the user did not type: slash
+    // commands and their output, reminders, and background-task notifications.
+    // A session that ends on a notification would otherwise name its handoff
+    // "<task-notification> <task-id>...".
+    [GeneratedRegex(@"^\s*<(command-name|local-command|system-reminder|task-notification)")]
     private static partial Regex InjectedTurnRegex();
 
     /// <summary>

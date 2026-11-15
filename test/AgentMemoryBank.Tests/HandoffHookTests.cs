@@ -34,7 +34,9 @@ public class HandoffHookTests
                 Tool("Edit", Path.Combine(repo.Root, "scratchpad", "probe.py")),
                 Tool("Edit", Path.Combine(repo.RepoDirectory, "scratchpad.md")),
                 Tool("Edit", edited),
-                Tool("Read", Path.Combine(repo.RepoDirectory, "README.md"))));
+                Tool("Read", Path.Combine(repo.RepoDirectory, "README.md"))),
+            // Arrives after the last real request, as a "user" turn nobody typed.
+            User("<task-notification> <task-id>b1</task-id> <status>completed</status> </task-notification>"));
 
         var output = Run(repo, AutoHandoffMode.Force, Payload(transcript, repo.RepoDirectory, "session-1"));
 
@@ -52,6 +54,7 @@ public class HandoffHookTests
         Assert.Contains("Fitted it; next is the p99 check.", saved.Summary);
         Assert.DoesNotContain("earlier conversation", saved.Summary);
         Assert.DoesNotContain("command-name", saved.Summary);
+        Assert.DoesNotContain("task-notification", saved.Summary);
         // In order, once each; the scratchpad and Claude temp files dropped, a
         // repository file that merely has "scratchpad" in its name kept.
         Assert.Equal($"{edited}, {Path.Combine(repo.RepoDirectory, "scratchpad.md")}", saved.ActiveFiles);
