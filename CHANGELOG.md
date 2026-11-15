@@ -2,7 +2,7 @@
 
 All notable user-visible changes to `agent-memory-bank` are documented in this file.
 
-## Unreleased
+## 0.0.3
 
 - **Automatic handoff hook in the binary:** `agent-memory-bank hook handoff` (for `PreCompact`) saves a handoff from the Claude Code session transcript: the recent requests, where the session had got to, the files it edited, and the git checkout of the session's folder (the hook input's `cwd`, else the transcript's last folder when that one no longer exists). `--mode threshold --percent N` saves only at N% of `autoCompactWindow`, at most every 15 minutes per session. It replaces a PowerShell script, so all three Claude Code hooks now run without PowerShell on Windows, Linux and macOS. Its log and per-session stamps are in `hook-state/` beside the database.
 - **`publish.sh` for Linux and macOS:** the counterpart of `publish.ps1`, publishing into `releases/<timestamp>/` behind a `publish` symlink so running servers are never killed. It prunes old releases only when `lsof` shows nothing using them.
