@@ -473,6 +473,43 @@ public sealed class GitCommitMinerTests
             n => n.Claim.StartsWith("The worker pool starves", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void Mined_note_with_space_paren_in_file_path_extracts_repo_from_last_paren()
+    {
+        var tempRoot = CreateTempDir();
+        try
+        {
+            using var db = MemoryDatabase.Open(Path.Combine(tempRoot, "memory.db"));
+            SeedRun(db, 1);
+
+            var draft = GitCommitMiner.BuildDraft("alpha", new MinedCommit
+            {
+                Sha = "ccccccc333333333333333333333333333333333",
+                ShortSha = "ccccccc",
+                Author = "Alice",
+                Date = DateTimeOffset.UtcNow,
+                Subject = "Guard legacy_paren_buffer bounds on reload",
+                Body = "Prevents out-of-bounds read in copied legacy path.",
+                Files = ["src/legacy (v1)/pool (copy).cc"],
+            }, runId: 1);
+
+            var added = Assert.IsType<NoteWriteResult.Accepted>(NoteStore.Add(db, draft, tempRoot));
+
+            var repos = NoteIndex.Repos(db);
+            Assert.Equal(["alpha"], repos);
+            Assert.DoesNotContain("v1)/pool (copy).cc (alpha", repos);
+            Assert.DoesNotContain("copy).cc (alpha", repos);
+
+            var hits = MemorySearch.Search(db, "legacy_paren_buffer", repo: "alpha", notesOnly: true).Notes;
+            Assert.Contains(hits, n => n.Id == added.Id);
+            Assert.Empty(MemorySearch.Search(db, "legacy_paren_buffer", repo: "beta", notesOnly: true).Notes);
+        }
+        finally
+        {
+            DeleteTempDir(tempRoot);
+        }
+    }
+
     private static void SeedRun(Microsoft.Data.Sqlite.SqliteConnection db, long runId = 1)
     {
         using var cmd = db.CreateCommand();

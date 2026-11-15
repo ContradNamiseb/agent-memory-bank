@@ -276,7 +276,13 @@ without spawning a shell wrapper:
 | `agent-memory-bank hook session-start` | `SessionStart` | Injects the most recent handoff for this repository, so a new session opens knowing where the last one stopped, with a warning first if it was written on another branch, commit or worktree. |
 | `agent-memory-bank hook recall` | `UserPromptSubmit` | Pulls identifiers out of the prompt, searches, and injects any matching notes. |
 
-Add them to `~/.claude/settings.json` (use `agent-memory-bank.exe` on Windows, or `agent-memory-bank` on Linux/macOS):
+Run either the native binary directly **or** the wrapper scripts shipped in
+`publish/hooks/` (copied with each `publish.ps1` release) — avoid pointing
+`settings.json` at the source `hooks/` folder in the working tree so updates stay
+aligned with the published binary.
+
+Option A — Native command (recommended; use `agent-memory-bank` without `.exe`
+on Linux and macOS) in `~/.claude/settings.json`:
 
 ```json
 {
@@ -293,10 +299,29 @@ Add them to `~/.claude/settings.json` (use `agent-memory-bank.exe` on Windows, o
 }
 ```
 
+Option B — PowerShell wrappers from `publish/hooks/` in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "powershell",
+                    "args": ["-NoProfile", "-File",
+                             "C:/path/to/publish/hooks/memory-session-start.ps1"] }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "powershell",
+                    "args": ["-NoProfile", "-File",
+                             "C:/path/to/publish/hooks/memory-recall.ps1"] }] }
+    ]
+  }
+}
+```
+
 Both exit with status `0` and emit nothing on any failure or uninitialized database:
-a hook that breaks session start is worse than no hook. The PowerShell scripts in
-`hooks/` (`memory-session-start.ps1` and `memory-recall.ps1`) remain as thin wrappers
-around those subcommands for setups already pointing at them.
+a hook that breaks session start is worse than no hook. The wrappers in
+`publish/hooks/` (`memory-session-start.ps1` and `memory-recall.ps1`) forward
+directly to those native subcommands for setups that invoke PowerShell scripts.
 
 Two deliberate choices in `hook recall` are worth knowing, because both
 were wrong in the first draft and testing caught them:

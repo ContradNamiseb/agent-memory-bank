@@ -33,13 +33,25 @@ public static class NoteIndex
     internal static readonly string RepoMatchSql = RepoMatchExpr("$repo");
 
     internal const string KnownReposSql = """
+        WITH RECURSIVE
+          mined(rest) AS (
+            SELECT substr(n.evidence, instr(n.evidence, ' (') + 2)
+            FROM note n
+            JOIN tag g ON g.note_id = n.id AND g.tag = 'git-history'
+            WHERE n.evidence LIKE 'git show % (%)'
+              AND instr(n.evidence, ' (') > 0
+            UNION ALL
+            SELECT substr(rest, instr(rest, ' (') + 2)
+            FROM mined
+            WHERE instr(rest, ' (') > 0
+          )
         SELECT DISTINCT repo FROM file
         UNION
-        SELECT DISTINCT substr(n.evidence, instr(n.evidence, ' (') + 2, length(n.evidence) - instr(n.evidence, ' (') - 2) AS repo
-        FROM note n
-        JOIN tag g ON g.note_id = n.id AND g.tag = 'git-history'
-        WHERE n.evidence LIKE 'git show % (%)'
-          AND instr(n.evidence, ' (') > 0
+        SELECT DISTINCT substr(rest, 1, length(rest) - 1) AS repo
+        FROM mined
+        WHERE instr(rest, ' (') = 0
+          AND rest LIKE '%)'
+          AND length(rest) > 1
         """;
 
     internal static readonly string SearchRepoFilterSql = $"""
