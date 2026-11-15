@@ -27,3 +27,25 @@ jobs:
 
       - name: Run tests
         run: dotnet test AgentMemoryBank.slnx --no-restore --verbosity normal
+
+      # Publishing twice swaps the publish link to a new release; KEEP=0 then
+      # prunes the first one. The hook runs with no store: it must stay silent.
+      - name: Publish (publish.sh)
+        if: runner.os != 'Windows'
+        run: |
+          sh publish.sh
+          KEEP=0 sh publish.sh
+          test -L publish
+          if command -v lsof > /dev/null; then test "$(ls -d releases/*-* | wc -l)" -eq 1; fi
+          ./publish/agent-memory-bank help > /dev/null
+          echo '{}' | MEMORY_BANK_DB="$RUNNER_TEMP/none.db" ./publish/agent-memory-bank hook handoff
+
+      - name: Publish (publish.ps1)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./publish.ps1
+          ./publish.ps1 -Keep 0
+          if ((Get-Item publish).LinkType -ne 'Junction') { throw 'publish is not a junction' }
+          ./publish/agent-memory-bank.exe help | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "help exited $LASTEXITCODE" }
