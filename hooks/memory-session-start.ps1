@@ -12,7 +12,12 @@ if (-not $exe) {
 }
 if (-not (Test-Path $exe)) { exit 0 }
 
-$inputJson = if ([Console]::IsInputRedirected) { [Console]::In.ReadToEnd() } else { '' }
+# Hook input is UTF-8 JSON: read it as bytes, not through the console code
+# page, and pipe it on as UTF-8, which Windows PowerShell 5.1 would send as
+# ASCII, turning every non-ASCII character of a path into '?'.
+$utf8 = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = $utf8
+$inputJson = if ([Console]::IsInputRedirected) { [IO.StreamReader]::new([Console]::OpenStandardInput(), $utf8).ReadToEnd() } else { '' }
 $out = $inputJson | & $exe hook session-start 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $out) { exit 0 }
 

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
@@ -95,7 +96,7 @@ internal static partial class HookRunner
 
     private static string ResolveWorkingDirectory(TextReader? stdin)
     {
-        var reader = stdin ?? (Console.IsInputRedirected ? Console.In : null);
+        var reader = stdin ?? (Console.IsInputRedirected ? StandardInput() : null);
         if (reader is null)
             return Environment.CurrentDirectory;
 
@@ -128,7 +129,7 @@ internal static partial class HookRunner
     /// </summary>
     public static int RunRecall(string dbPath, TextReader? stdin = null, TextWriter? stdout = null)
     {
-        stdin ??= Console.In;
+        stdin ??= StandardInput();
         stdout ??= Console.Out;
         try
         {
@@ -176,7 +177,7 @@ internal static partial class HookRunner
         string dbPath, AutoHandoffMode mode, int percent,
         TextReader? stdin = null, TextWriter? stdout = null, string? claudeDir = null)
     {
-        stdin ??= Console.In;
+        stdin ??= StandardInput();
         stdout ??= Console.Out;
         string? stateDir = null;
         try
@@ -293,6 +294,13 @@ internal static partial class HookRunner
         }
         return DefaultContextWindow;
     }
+
+    // Hook input is UTF-8 JSON, whatever the console's code page. Console.In
+    // decodes with that code page (an OEM one such as 437 on Windows), which
+    // garbles every non-ASCII character of a path or prompt. Output needs no
+    // such care: JsonSerializer escapes non-ASCII, so it is plain ASCII.
+    private static TextReader StandardInput() =>
+        new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
     private static double Occupancy(long tokens, long window) => Math.Round(100.0 * tokens / window, 1);
 

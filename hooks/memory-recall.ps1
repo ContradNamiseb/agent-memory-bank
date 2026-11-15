@@ -12,7 +12,13 @@ if (-not $exe) {
 }
 if (-not (Test-Path $exe)) { exit 0 }
 
-$out = [Console]::In.ReadToEnd() | & $exe hook recall 2>$null
+# Hook input is UTF-8 JSON: read it as bytes, not through the console code
+# page, and pipe it on as UTF-8, which Windows PowerShell 5.1 would send as
+# ASCII, turning every non-ASCII character of a prompt into '?'.
+$utf8 = [Text.UTF8Encoding]::new($false)
+$OutputEncoding = $utf8
+$inputJson = [IO.StreamReader]::new([Console]::OpenStandardInput(), $utf8).ReadToEnd()
+$out = $inputJson | & $exe hook recall 2>$null
 if ($LASTEXITCODE -ne 0 -or -not $out) { exit 0 }
 
 $text = ($out -join [Environment]::NewLine).Trim()
