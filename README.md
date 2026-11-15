@@ -129,6 +129,10 @@ cd publish
 Re-run `index` whenever you want; it hashes first and skips what has not
 changed, so a few hundred files take about a second.
 
+When configured repositories share git history (such as branches or worktrees),
+running `mine-git` attributes shared commits to each repository via tags on the
+live note without duplicating or re-mining superseded commits.
+
 Everything the server exposes over MCP also works from the shell, which is the
 quickest way to confirm the store holds what you think it does:
 

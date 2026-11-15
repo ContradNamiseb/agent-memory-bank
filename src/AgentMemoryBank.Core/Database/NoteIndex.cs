@@ -17,27 +17,39 @@ public sealed record IndexEntry(
 /// </summary>
 public static class NoteIndex
 {
-    internal const string RepoMatchSql = """
+    internal static string RepoMatchExpr(string repoParam) => $"""
         (EXISTS (SELECT 1 FROM edge e
                  JOIN chunk c ON c.id = e.dst_id
                  JOIN file f ON f.id = c.file_id
                  WHERE e.src_kind = 'note' AND e.src_id = n.id
-                   AND e.dst_kind = 'chunk' AND f.repo = $repo)
-         OR EXISTS (SELECT 1 FROM tag t WHERE t.note_id = n.id AND t.tag = lower($repo))
-         OR substr(n.evidence, 1, length($repo) + 1) IN ($repo || '/', $repo || ':')
-         OR instr(n.evidence, ' ' || $repo || '/') > 0
-         OR instr(n.evidence, ' ' || $repo || ':') > 0
-         OR substr(n.evidence, -(length($repo) + 3)) = ' (' || $repo || ')')
+                   AND e.dst_kind = 'chunk' AND f.repo = {repoParam})
+         OR EXISTS (SELECT 1 FROM tag t WHERE t.note_id = n.id AND t.tag = lower({repoParam}))
+         OR substr(n.evidence, 1, length({repoParam}) + 1) IN ({repoParam} || '/', {repoParam} || ':')
+         OR instr(n.evidence, ' ' || {repoParam} || '/') > 0
+         OR instr(n.evidence, ' ' || {repoParam} || ':') > 0
+         OR substr(n.evidence, -(length({repoParam}) + 3)) = ' (' || {repoParam} || ')')
         """;
 
-    internal const string UnattributedNoteSql = """
-        (NOT EXISTS (SELECT 1 FROM edge e WHERE e.src_kind = 'note' AND e.src_id = n.id AND e.dst_kind = 'chunk')
-         AND NOT EXISTS (SELECT 1 FROM tag t WHERE t.note_id = n.id AND t.tag = 'git-history')
-         AND COALESCE(n.evidence, '') NOT GLOB '*[A-Za-z0-9._-]/[A-Za-z0-9._/-]*.*:[0-9]*'
-         AND COALESCE(n.evidence, '') NOT GLOB '*[A-Za-z0-9._-]:[A-Za-z0-9._/-]*.*:[0-9]*')
+    internal static readonly string RepoMatchSql = RepoMatchExpr("$repo");
+
+    internal const string KnownReposSql = """
+        SELECT DISTINCT repo FROM file
+        UNION
+        SELECT DISTINCT t.tag AS repo FROM tag t
+        JOIN tag g ON g.note_id = t.note_id AND g.tag = 'git-history'
+        WHERE t.tag <> 'git-history'
         """;
 
-    internal const string RepoFilterSql = $"""
+    internal static readonly string SearchRepoFilterSql = $"""
+        ($repo IS NULL
+         OR {RepoMatchSql}
+         OR NOT EXISTS (
+             SELECT 1 FROM ({KnownReposSql}) kr
+             WHERE kr.repo <> $repo
+               AND {RepoMatchExpr("kr.repo")}))
+        """;
+
+    internal static readonly string RepoFilterSql = $"""
         ($repo IS NULL OR {RepoMatchSql})
         """;
 
@@ -50,7 +62,7 @@ public static class NoteIndex
         string? repo = null, NoteKind? kind = null, string? tag = null, bool includeSuperseded = false,
         int limit = 200, long beforeId = 0)
     {
-        const string filter = $"""
+        var filter = $"""
             FROM note n
             WHERE ($kind IS NULL OR n.kind = $kind)
               AND ($all OR n.superseded_by IS NULL)
@@ -90,14 +102,7 @@ public static class NoteIndex
 
     /// <summary>Every repository name the store knows, for refusing an unknown one with the valid list.</summary>
     public static IReadOnlyList<string> Repos(SqliteConnection db) =>
-        db.Prepare("""
-            SELECT DISTINCT repo FROM file
-            UNION
-            SELECT DISTINCT t.tag FROM tag t
-            JOIN tag g ON g.note_id = t.note_id AND g.tag = 'git-history'
-            WHERE t.tag <> 'git-history'
-            ORDER BY 1
-            """).Query(r => r.GetString(0));
+        db.Prepare($"{KnownReposSql} ORDER BY 1").Query(r => r.GetString(0));
 
     /// <summary>The most used tags, for refusing an unknown one with the valid list.</summary>
     public static IReadOnlyList<string> Tags(SqliteConnection db, int limit = 40) =>

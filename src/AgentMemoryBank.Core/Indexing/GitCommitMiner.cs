@@ -99,6 +99,7 @@ public static partial class GitCommitMiner
         GitMineOptions options,
         Action<string, MinedCommit>? onMined = null)
     {
+        BackfillSharedCommitTags(db, repoName, repoDirectory);
         var commits = ReadCommits(repoDirectory, options);
         int created = 0, skipped = 0;
 
@@ -110,7 +111,7 @@ public static partial class GitCommitMiner
                 continue;
             }
 
-            if (!options.OverwriteExisting && IsAlreadyMined(db, repoName, commit.ShortSha))
+            if (!options.OverwriteExisting && TryAttributeExistingCommit(db, repoName, commit.ShortSha))
             {
                 skipped++;
                 continue;
@@ -282,18 +283,55 @@ public static partial class GitCommitMiner
         };
     }
 
-    private static bool IsAlreadyMined(SqliteConnection db, string repoName, string shortSha)
+    private static bool TryAttributeExistingCommit(SqliteConnection db, string repoName, string shortSha)
     {
-        using var cmd = db.CreateCommand();
-        cmd.CommandText = """
-            SELECT 1 FROM note
+        using var cmd = db.Prepare("""
+            SELECT id FROM note
             WHERE instr(evidence, 'git show ' || $sha) > 0
-              AND substr(evidence, -(length($repo) + 3)) = ' (' || $repo || ')'
-            LIMIT 1
-            """;
-        cmd.Parameters.AddWithValue("$sha", shortSha);
-        cmd.Parameters.AddWithValue("$repo", repoName);
-        return cmd.ExecuteScalar() is not null;
+            ORDER BY id
+            """, "$sha");
+        var ids = cmd.SetAll(shortSha).Query(r => r.GetInt64(0));
+        if (ids.Count == 0) return false;
+
+        foreach (var id in ids)
+        {
+            var (headId, _) = NoteStore.LiveHeadId(db, id);
+            NoteStore.EnsureTags(db, headId, ["git-history", repoName]);
+            if (headId != id)
+                NoteStore.EnsureTags(db, id, ["git-history", repoName]);
+        }
+        return true;
+    }
+
+    private static void BackfillSharedCommitTags(SqliteConnection db, string repoName, string repoDirectory)
+    {
+        var allRevs = GitProcess.Run(repoDirectory, "rev-list", "--all");
+        var repoShortShas = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var line in allRevs.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            var sha = line.Trim();
+            if (sha.Length >= 8) repoShortShas.Add(sha[..8]);
+        }
+        if (repoShortShas.Count == 0) return;
+
+        using var cmd = db.Prepare("""
+            SELECT id, evidence FROM note
+            WHERE evidence LIKE 'git show %'
+            ORDER BY id
+            """);
+        var mined = cmd.Query(r => (Id: r.GetInt64(0), Evidence: r.GetString(1)));
+        foreach (var (id, evidence) in mined)
+        {
+            var rest = evidence.AsSpan("git show ".Length).TrimStart();
+            var space = rest.IndexOf(' ');
+            var sha = (space > 0 ? rest[..space] : rest).ToString();
+            if (!repoShortShas.Contains(sha)) continue;
+
+            var (headId, _) = NoteStore.LiveHeadId(db, id);
+            NoteStore.EnsureTags(db, headId, ["git-history", repoName]);
+            if (headId != id)
+                NoteStore.EnsureTags(db, id, ["git-history", repoName]);
+        }
     }
 
     private static string CleanTrailers(string body)

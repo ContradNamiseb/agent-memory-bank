@@ -92,12 +92,19 @@ public class SearchTests
         repo.Write("src/options.h", "struct Options {\n  float retry_jitter = 0.25f;\n};\n");
         repo.Commit();
 
-        var otherFile = Path.Combine(repo.Root, "other", "src", "other.h");
+        var otherDir = Path.Combine(repo.Root, "other");
+        var otherFile = Path.Combine(otherDir, "src", "other.h");
         Directory.CreateDirectory(Path.GetDirectoryName(otherFile)!);
         File.WriteAllText(otherFile, "struct Other {\n  float retry_jitter = 0.50f;\n};\n");
+        GitProcess.Run(otherDir, "init");
+        GitProcess.Run(otherDir, "config", "user.email", "test@example.com");
+        GitProcess.Run(otherDir, "config", "user.name", "Test User");
+        GitProcess.Run(otherDir, "add", ".");
+        GitProcess.Run(otherDir, "commit", "-m", "init other");
 
         using var db = MemoryDatabase.Open(repo.DbPath);
         Indexer.IndexRepo(db, repo.RepoName, repo.RepoDirectory);
+        Indexer.IndexRepo(db, "other", otherDir);
 
         var first = Assert.IsType<AgentMemoryBank.Models.NoteWriteResult.Accepted>(
             NoteStore.Add(db, new NoteDraft
@@ -118,10 +125,32 @@ public class SearchTests
 
         var otherHits = MemorySearch.Search(db, "retry_jitter", repo: "other");
         Assert.Equal([second.Id], otherHits.Notes.Select(n => n.Id));
-        Assert.Empty(otherHits.Chunks);
+        Assert.NotEmpty(otherHits.Chunks);
 
         var unfiltered = MemorySearch.Search(db, "retry_jitter");
         Assert.Equal(2, unfiltered.Notes.Count);
+    }
+
+    [Fact]
+    public void Unattributed_hazard_with_script_path_and_clock_time_stays_in_repo_scoped_search()
+    {
+        using var repo = new TempRepo();
+        repo.Write("src/options.h", "struct Options {\n  float retry_jitter = 0.25f;\n};\n");
+        repo.Commit();
+
+        using var db = MemoryDatabase.Open(repo.DbPath);
+        Indexer.IndexRepo(db, repo.RepoName, repo.RepoDirectory);
+
+        var added = Assert.IsType<AgentMemoryBank.Models.NoteWriteResult.Accepted>(
+            NoteStore.Add(db, new NoteDraft
+            {
+                Claim = "sanitizer race reproduces under 8 worker threads",
+                Evidence = "scratchpad pr2417/sanitizer_runs.py on repos/app/build/app.exe, 9 runs, finished 12:30",
+                Kind = AgentMemoryBank.Models.NoteKind.Hazard,
+            }, repoRoot: repo.Root));
+
+        Assert.Contains(added.Id, MemorySearch.Search(db, "sanitizer race").Notes.Select(n => n.Id));
+        Assert.Contains(added.Id, MemorySearch.Search(db, "sanitizer race", repo: repo.RepoName).Notes.Select(n => n.Id));
     }
 
     [Fact]

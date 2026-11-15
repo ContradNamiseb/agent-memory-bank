@@ -344,6 +344,56 @@ public sealed class GitCommitMinerTests
         }
     }
 
+    [Fact]
+    public void Cloning_a_repo_after_superseding_a_mined_note_does_not_remine_and_links_clone_to_live_head()
+    {
+        var tempRoot = CreateTempDir();
+        try
+        {
+            var fixtureDir = Path.Combine(tempRoot, "fixture");
+            Directory.CreateDirectory(Path.Combine(fixtureDir, "src"));
+            GitProcess.Run(fixtureDir, "init");
+            GitProcess.Run(fixtureDir, "config", "user.email", "test@example.com");
+            GitProcess.Run(fixtureDir, "config", "user.name", "Test User");
+
+            File.WriteAllText(Path.Combine(fixtureDir, "src", "engine.cc"), "constexpr double kCpuctBase = 2800.0;\n");
+            GitProcess.Run(fixtureDir, "add", "src/engine.cc");
+            GitProcess.Run(fixtureDir, "commit",
+                "-m", "Adjust mcts_cpuct_base after deeper endgame sweep",
+                "-m", "Measured across 10k games; reduces tactical horizon drops.");
+
+            using var db = MemoryDatabase.Open(Path.Combine(tempRoot, "memory.db"));
+
+            var firstRun = GitCommitMiner.MineAll(db, tempRoot, ["fixture"], new GitMineOptions());
+            Assert.Equal(1, Assert.Single(firstRun.Results).NotesCreated);
+
+            var original = Assert.Single(NoteIndex.List(db, repo: "fixture").Entries);
+            var superseded = Assert.IsType<NoteWriteResult.Accepted>(
+                NoteStore.Supersede(db, original.Id, new NoteDraft
+                {
+                    Claim = "mcts_cpuct_base updated to 2900 after clone verification",
+                    Evidence = "fixture/src/engine.cc:1",
+                    Tags = ["fixture"],
+                }, why: "re-calibrated", repoRoot: tempRoot));
+
+            var cloneDir = Path.Combine(tempRoot, "clone");
+            GitProcess.Run(tempRoot, "clone", fixtureDir, cloneDir);
+
+            var cloneRun = GitCommitMiner.MineAll(db, tempRoot, ["clone"], new GitMineOptions());
+            var cloneResult = Assert.Single(cloneRun.Results);
+            Assert.Null(cloneResult.Error);
+            Assert.Equal(0, cloneResult.NotesCreated);
+            Assert.Equal(1, cloneResult.NotesSkipped);
+
+            var cloneHits = MemorySearch.Search(db, "mcts_cpuct_base", repo: "clone", notesOnly: true).Notes;
+            Assert.Contains(superseded.Id, cloneHits.Select(n => n.Id));
+        }
+        finally
+        {
+            DeleteTempDir(tempRoot);
+        }
+    }
+
     private static void SeedRun(Microsoft.Data.Sqlite.SqliteConnection db, long runId = 1)
     {
         using var cmd = db.CreateCommand();

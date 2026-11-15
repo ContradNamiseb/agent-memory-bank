@@ -115,7 +115,7 @@ public static class MemorySearch
             WHERE note_fts MATCH $match
               AND ($kind IS NULL OR n.kind = $kind)
               AND ($includeSuperseded OR n.superseded_by IS NULL)
-              AND ($repo IS NULL OR {NoteIndex.RepoMatchSql} OR {NoteIndex.UnattributedNoteSql})
+              AND {NoteIndex.SearchRepoFilterSql}
             ORDER BY score
             LIMIT $limit
             """, "$match", "$kind", "$includeSuperseded", "$repo", "$limit");

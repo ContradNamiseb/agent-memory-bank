@@ -449,6 +449,10 @@ public static class NoteStore
             : AnchorSelector.ChooseAnchorText(lines, citation.Line);
     }
 
+    /// <summary>Idempotently attach tags to an existing note outside a write transaction.</summary>
+    public static void EnsureTags(SqliteConnection db, long noteId, IReadOnlyList<string> tags) =>
+        AddTags(db, transaction: null, noteId, tags);
+
     private static void AddTags(SqliteConnection db, SqliteTransaction? transaction, long noteId,
         IReadOnlyList<string> tags)
     {
