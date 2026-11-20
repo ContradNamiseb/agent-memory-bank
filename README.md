@@ -401,3 +401,7 @@ This project was built with Claude (Anthropic's Claude Code). The design and
 the decisions are the maintainer's. Claude wrote the implementation against
 that design, and the maintainer reviews it. That review is why the project is
 in C#: the rule here is to depend on nothing that has not been read.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
